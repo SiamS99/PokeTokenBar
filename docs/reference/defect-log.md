@@ -286,10 +286,56 @@ read_when:
   `currentIsShiny`)을 직접 추적하는 관찰 루프를 별도로 건다(`AppDelegate.observeCompanionSprite`).
   회귀 가드: `testCandyGraduationFiresSpriteIdentityObservation` — AppDelegate 쪽 배선은 AppKit
   (NSStatusBar)이라 헤드리스 테스트 불가, 관찰 계약(변이가 발화하는지)을 CompanionStore 쪽에서 고정.
+- **WPF 지갑/알/진화 진행도가 "오늘 누적 대비 델타" 방식이라 앱이 꺼진 채 자정을 넘기면 그 차이가
+  영구히 사라진다.** `CompanionStore.UpdateAsync` 는 `ClaimedTodayTokensByProvider` 를 그날의 baseline
+  으로 쓰고 날짜가 바뀌면 그냥 0 으로 리셋한다 — 리셋 시점에 "그날의 진짜 최종 합계"를 다시 확인하지
+  않는다. 그래서 앱이 마지막으로 폴링한 시각 이후 자정까지(또는 앱이 꺼져 있던 며칠) 발생한 사용량은
+  Claude/Codex 로그엔 멀쩡히 남아 있는데 지갑·알 진행도·진화 진행도 세 곳 모두에서 조용히 빠진다 —
+  로그를 직접 재스캔해 비교하기 전엔 "그냥 좀 느리다" 정도로만 보인다. 실측: 3일치 로그를 직접 덧셈
+  (204건 dedup) 하니 20,729,336 인데 저장된 `UsedSinceInstall` 은 19,058,880 — 프로세스 시작시각이
+  전날 자정을 건너뛴 뒤였다. 고침: `UsageStore.ComputeGapCreditAsync` 가 매 새로고침마다
+  `_companion.State.LastDate` 가 어제 이전이면 `[LastDate, 어제]` 구간을 `ClaudeCodeProvider.FetchRange`/
+  `CodexProvider.FetchRange`(신설 — 로그를 매번 새로 읽어 합산, week/month 와 같은 패턴)로 다시 읽어
+  이미 claim된 분을 뺀 나머지를 `UpdateAsync(gapCredit:)` 로 흘려보낸다. `UpdateAsync` 는 알/진화 처리
+  루프를 `ApplyDeltaAsync` 로 뽑아 gapCredit 도 오늘의 delta 와 **합쳐서 한 번에** 통과시킨다 — 별도
+  경로로 처리하면 부화/진화 로직이 두 벌이 되어 그 자체가 결함 부류(§표시·UI 상단 "같은 상태를 두 곳에
+  나눠 들면 재발" 규칙)를 반복한다. **한계**: 이 고침은 *다음* 자정 이후부터 효과가 있다 — 코드가
+  배포되기 전에 이미 리셋되며 사라진 과거분(이 사용자의 19.06M→20.73M 격차)은 `LastDate` 가 이미
+  최신으로 넘어가 있어 재계산 트리거 조건(`lastDate.Date < today`)을 안 밟는다. 소급 보정은 코드가 아니라
+  **세이브 파일 직접 정정**(일회성, 사용자 확인 후)으로 처리 — "설치 이후 전체"를 매번 무제한 재스캔하는
+  일반 코드는 설치 전부터 Claude 를 오래 쓴 사용자에게 그 이전 사용량까지 잘못 소급 적립하므로 채택 안 함.
+  WPF 테스트 인프라 부재로 회귀 가드는 미작성.
+- **같은 부류가 WPF 포트에서 독립 재현됐다 — "전이 이벤트에만 리렌더 트리거".** `PokeTokenBarWPF`
+  (`ViewModels/MainViewModel.cs`)는 이름·스프라이트·진행률·지갑을 `UsageStore.CompanionChanged`
+  (부화/진화/졸업 *전이*만 true) 핸들러 안에서만 `OnPropertyChanged` 했다. 결과: 앱을 새로 띄우면
+  `CompanionStore.CompanionDisplayName` 이 런타임 전용 필드라 하드코드 기본값 `"Egg"` 로 시작하고,
+  그 필드를 채우는 `RefreshDisplayNameAsync()` 는 `UpdateAsync` 의 "delta != 0" 분기에서만 불려
+  재기동 직후 아직 토큰을 안 썼으면 절대 안 불린다 — 세이브 파일의 `Active` 는 멀쩡한데 화면은 다음
+  전이(며칠 뒤일 수도)까지 알 상태로 고정된다("PC 재시작하니 알로 돌아갔다" 리포트). 고친 방식: 전이
+  플래그가 아니라 *실제 갱신 주기* (`UsageStore.TodayUsage` 변경 — 매 새로고침, 재기동 시 첫 값은
+  항상 null→값이라 무조건 한 번은 발화)에 이름·스프라이트·진행률 재수화를 건다
+  (`MainViewModel.RefreshCompanionDisplayAsync`). WPF 쪽엔 테스트 프로젝트가 아예 없어 회귀 가드는
+  아직 없음 — 다음에 WPF 테스트 인프라를 놓을 때 최우선 후보.
 - **메뉴바(상태아이템) stale dim 금지.** 시간 기반 stale(=`isStale`)로 `appearsDisabled` 를 켜면
   슬립/런치 직후 refresh 완료 전 몇 초간 메뉴바가 회색이 돼 '고장/비활성'으로 오인된다(사용자 반복 지적,
   `&& lastUpdated != nil` 로 런치만 막는 건 슬립-후 stale 을 못 막음). '오래됨' 신호는 팝오버에서만.
 - **UI 변경 → 스크린샷 stale** 은 `release.sh` 가 자동 경고(`CLAUDE.md` §릴리스) — 통과의례화 방지.
+- **`SystemParameters.WorkArea`(WPF)는 항상 *주* 모니터다 — 트레이 아이콘이 다른 모니터에 있으면 팝업이
+  안 보인다.** `MainWindow.ShowNearTray()` 가 이 값으로 하단우측 좌표를 잡았는데, 3모니터 구성에서 트레이가
+  비주 모니터에 있으면 팝업이 매번 주 모니터 구석에 렌더돼 사용자가 절대 안 보는 화면에 뜬다 — "토큰이
+  안 보인다" 리포트로 들어왔지만 실제 원인은 백엔드(`ClaudeCodeProvider`/`UsageStore`/`omp.json` export)가
+  아니라 순전히 팝업 위치였다(백엔드는 라이브로 정상 갱신 중이었음). **자가치유 안 됨** — 매 열림마다
+  같은 좌표를 다시 계산하므로 최초 1회성 버그가 아니라 그 구성에서 영구히 재현된다. 고침: 커서 아래
+  모니터를 `MonitorFromPoint`/`GetMonitorInfo`(Win32, `MONITOR_DEFAULTTONEAREST`)로 직접 조회 — WinForms
+  `Screen` API 를 새로 참조 추가하는 대신 `user32.dll` P/Invoke 로 해결(csproj 에 `UseWindowsForms` 없음).
+  물리 픽셀→WPF 단위 변환은 `VisualTreeHelper.GetDpi(this)` 로 나눈다(첫 표시 전이라 완벽한 모니터별 DPI는
+  아니고 근사치 — 혼합 DPI 멀티모니터 엣지케이스는 미해결, 실용적 트레이드오프로 남김).
+  **같은 메서드의 별개 결함**: `Top = screen.Bottom - ActualHeight - 16` 가 최초 호출 때 `ActualHeight==0`
+  이었다 — `Measure()` 만으론 `ActualHeight` 가 안 채워지고 `Arrange()` 까지 해야 채워지는데, 호출부
+  (`App.xaml.cs TogglePopup`)는 `Measure()` 만 하고 있었다. `ShowNearTray()` 안에서 `Measure`+`Arrange` 를
+  함께 하도록 옮겨 자체 완결시킴(호출부의 중복 `Measure` 호출 제거). 이 부류를 겪은 유일한 지점이라
+  스윕 결과 다른 `SystemParameters` 사용처는 없음. WPF 테스트 인프라가 없어 회귀 가드는 미작성 —
+  [[WPF 전이 이벤트 리렌더]] 항목과 마찬가지로 다음 WPF 테스트 인프라 도입 시 최우선 후보.
 
 ## 에너지 (상시 표시 애니메이션)
 
