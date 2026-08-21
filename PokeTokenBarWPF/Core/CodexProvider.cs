@@ -4,13 +4,25 @@ namespace PokeTokenBar.Core;
 
 /// <summary>
 /// Reads OpenAI Codex token usage from local rollout JSONL logs.
-/// Windows path: %USERPROFILE%\.codex\sessions\**\rollout-*.jsonl
+/// Windows paths: %USERPROFILE%\.codex\sessions\**\rollout-*.jsonl and
+/// %USERPROFILE%\.codex\archived_sessions\**\rollout-*.jsonl — Codex moves old
+/// rollouts into the archived root without deleting them, so scanning only the
+/// active root silently drops usage the moment a session gets archived.
 /// Each relevant line contains a token_count event with last_token_usage (turn delta).
 /// </summary>
 public class CodexProvider
 {
-    private static readonly string SessionsRoot =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "sessions");
+    private static readonly string[] ScanRoots = BuildScanRoots();
+
+    private static string[] BuildScanRoots()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return
+        [
+            Path.Combine(home, ".codex", "sessions"),
+            Path.Combine(home, ".codex", "archived_sessions"),
+        ];
+    }
 
     // ── Public surface ────────────────────────────────────────────────────────
 
@@ -93,25 +105,29 @@ public class CodexProvider
 
     private static IEnumerable<LogEntry> ScanEntries(DateTime modifiedSince)
     {
-        if (!Directory.Exists(SessionsRoot)) return [];
-
         var byId = new Dictionary<string, LogEntry>();
-        IEnumerable<string> files;
-        try
-        {
-            files = Directory.EnumerateFiles(SessionsRoot, "rollout-*.jsonl", SearchOption.AllDirectories);
-        }
-        catch { return []; }
 
-        foreach (var file in files)
+        foreach (var root in ScanRoots)
         {
-            try { if (File.GetLastWriteTime(file) < modifiedSince) continue; }
+            if (!Directory.Exists(root)) continue;
+
+            IEnumerable<string> files;
+            try
+            {
+                files = Directory.EnumerateFiles(root, "rollout-*.jsonl", SearchOption.AllDirectories);
+            }
             catch { continue; }
 
-            foreach (var entry in ParseFile(file, Path.GetFileName(file)))
+            foreach (var file in files)
             {
-                if (!byId.ContainsKey(entry.Id))
-                    byId[entry.Id] = entry;
+                try { if (File.GetLastWriteTime(file) < modifiedSince) continue; }
+                catch { continue; }
+
+                foreach (var entry in ParseFile(file, Path.GetFileName(file)))
+                {
+                    if (!byId.ContainsKey(entry.Id))
+                        byId[entry.Id] = entry;
+                }
             }
         }
 
@@ -120,22 +136,27 @@ public class CodexProvider
 
     private static IEnumerable<LogEntry> ParseFile(string path, string fileName)
     {
-        string[] lines;
-        try { lines = File.ReadAllLines(path); }
-        catch { return []; }
-
+        // Stream line-by-line instead of loading the whole rollout into memory —
+        // Codex rollouts can grow very large, and ReadAllLines peaks at the full
+        // file size plus the resulting array. File.ReadLines opens/reads lazily,
+        // so the try/catch has to wrap the whole enumeration, not just the call.
         var result = new List<LogEntry>();
-        for (int turn = 0; turn < lines.Length; turn++)
+        try
         {
-            var line = lines[turn];
-            if (!line.Contains("token_count")) continue;
+            int turn = 0;
+            foreach (var line in File.ReadLines(path))
+            {
+                var lineTurn = turn++;
+                if (!line.Contains("token_count")) continue;
 
-            LogEntry? entry;
-            try { entry = ParseLine(line, fileName, turn); }
-            catch { continue; }
+                LogEntry? entry;
+                try { entry = ParseLine(line, fileName, lineTurn); }
+                catch { continue; }
 
-            if (entry is not null) result.Add(entry);
+                if (entry is not null) result.Add(entry);
+            }
         }
+        catch { }
         return result;
     }
 

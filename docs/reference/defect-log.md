@@ -92,6 +92,19 @@ read_when:
   `LocalUsageReader.claudeProjectRoots` 한 곳에서만 한다. 임베디드 루트 탐색은 `.claude` 가 **hidden** 이라
   `skipsHiddenFiles` 를 켜면 조용히 0건이 된다 — 회귀 가드
   `testEmbeddedRootsFindHiddenClaudeProjectsDirs` 가 그 브랜치를 밟는다.
+- **WPF 의 `CodexProvider` 가 같은 "루트 한 곳" 결함과 `File.ReadAllLines` 전체읽기를 독립적으로
+  갖고 있었다 — upstream #181/#184 를 포팅해 맞췄다.** Codex 가 세션을 `~/.codex/sessions` 에서
+  `~/.codex/archived_sessions` 로 옮기면(삭제 아님) 활성 루트만 스캔하는 코드는 보관 직후 그 세션의
+  사용량이 통째로 사라진 것처럼 보인다 — 위 "로그 루트는 한 곳이 아니다" 항목과 같은 부류다. 고침:
+  `CodexProvider.ScanRoots` 를 두 경로 배열로(`ClaudeCodeProvider.BuildLogRoots` 와 같은 패턴, 존재하는
+  루트만). 파일 읽기는 `File.ReadAllLines`(파일 전체 크기만큼 배열로 적재) → `File.ReadLines`(진짜 지연
+  스트리밍, `StreamReader` 내부 버퍼만 유지)로 — Swift #94 가 겪은 "스트리밍이 오히려 메모리를 악화시켰다"
+  회귀는 autoreleasepool 부재가 원인이라 .NET 의 세대별 GC 에는 해당하지 않는다(스트림 자체가 참조카운트가
+  아니라 매 청크가 자연히 수거됨). 단, `File.ReadLines` 는 호출 시점이 아니라 **열거 시점에** 열고 읽으므로
+  try/catch 는 `foreach` 전체를 감싸야 한다 — 호출부만 감싸면 파일 잠금·권한 예외를 못 잡는다. 이 스트리밍
+  전환은 Codex 쪽만 포팅했다 — upstream 도 Claude/Grok/Gemini 파서는 "근거 없는 일괄 전환은 #94 를
+  반복한다"며 의도적으로 보류 중이라, WPF 의 `ClaudeCodeProvider.ParseFile` 도 같은 이유로 손대지 않았다
+  (아직 whole-file read). WPF 테스트 인프라 부재로 회귀 가드는 미작성.
 - **GUI 앱은 셸 환경을 상속하지 않는다 — 환경변수로 설정되는 경로는 셸에 물어봐야 한다.** Finder/launchd 로
   뜬 `.app` 의 `ProcessInfo.processInfo.environment` 에는 `~/.zshrc` 의 export 가 없다. 그래서
   `CLAUDE_CONFIG_DIR` 같은 값을 프로세스 환경에서만 읽으면 **CLI·`swift test` 에서는 통과하고 배포된 앱에서만
