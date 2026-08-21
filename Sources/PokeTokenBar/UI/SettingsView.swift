@@ -7,6 +7,8 @@ struct SettingsView: View {
     @Environment(UpdateChecker.self) private var updater
     /// 팝오버 내부 화면 전환 방식 — sheet/dismiss 를 쓰지 않는다 (PopoverView 의 NOTE 참조)
     var onClose: () -> Void
+    /// 기존 컬렉션의 도감으로 돌아가 대표 포켓몬을 고르게 한다.
+    var onChooseRepresentative: () -> Void
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var launchAtLoginError: String?
     @State private var reportError: String?
@@ -16,6 +18,14 @@ struct SettingsView: View {
     private var l: L { companion.l }
 
     private var isBundledApp: Bool { AppEnv.isBundledApp }
+
+    private var representativeSelectionText: String {
+        guard let selected = companion.representativeSpeciesID,
+              let species = companion.dexSpecies.first(where: { $0.id == selected }) else {
+            return l.representativeFollowCurrent
+        }
+        return "#\(species.id) \(species.name)\(species.isShiny ? " ✨" : "")"
+    }
 
     /// 세이브 봉투에 남길 출처 표기 — 어느 Mac에서 내보낸 파일인지 나중에 알아보기 위한 것.
     private static var deviceName: String {
@@ -46,6 +56,7 @@ struct SettingsView: View {
                     aboutSupportGroup
                 }
                 .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             Divider()
             footer
@@ -107,6 +118,29 @@ struct SettingsView: View {
                     ForEach(AppLanguage.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
                 .labelsHidden().pickerStyle(.menu).fixedSize()
+            }
+            Divider()
+            groupRow {
+                Text(l.representativePokemonLabel)
+                    .lineLimit(1).minimumScaleFactor(0.75)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Menu {
+                    Button {
+                        _ = companion.setRepresentativeSpeciesID(nil)
+                    } label: {
+                        if companion.representativeSpeciesID == nil {
+                            Label(l.representativeFollowCurrent, systemImage: "checkmark")
+                        } else {
+                            Text(l.representativeFollowCurrent)
+                        }
+                    }
+                    Button(l.representativeChooseFromDex, action: onChooseRepresentative)
+                } label: {
+                    Text(representativeSelectionText).lineLimit(1).truncationMode(.tail)
+                }
+                .controlSize(.small)
+                .frame(width: 150, alignment: .trailing)
+                .layoutPriority(1)
             }
             Divider()
             groupRow {

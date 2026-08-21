@@ -5,8 +5,9 @@ import Foundation
 /// - Claude: `~/.claude/projects/**/*.jsonl` 의 `type:"assistant"` 라인
 ///   (`message.usage` 4종 토큰, `message.model`, `message.id`+`requestId`, `timestamp`).
 ///   세션 재개/sidechain 으로 같은 메시지가 여러 파일에 중복 → `(message.id, requestId)` 로 dedup.
-/// - Codex: `~/.codex/sessions/**/rollout-*.jsonl` 의 `event_msg.payload.type:"token_count"`
-///   (`info.last_token_usage` 턴 델타) 합산.
+/// - Codex: `~/.codex/sessions/**/rollout-*.jsonl` 및 보관된
+///   `~/.codex/archived_sessions/rollout-*.jsonl` 의
+///   `event_msg.payload.type:"token_count"` (`info.last_token_usage` 턴 델타) 합산.
 ///
 /// 성능: mtime 윈도우로 스캔 파일을 한정(범위 시작 이전에 수정된 파일은 범위 내 엔트리가 없음).
 enum LocalUsageReader {
@@ -202,8 +203,41 @@ enum LocalUsageReader {
         // 원래 순서(우선순위)를 보존해 돌려준다.
         return unique.filter(kept.contains).map { URL(fileURLWithPath: $0) }
     }
+    /// Codex 기본 경로는 이 두 상대 경로로만 정의한다.
+    /// `codexScanRoots`를 직접 조립하는 코드가 늘어나면 활성 세션과 보관 세션 중
+    /// 한쪽만 캐시·스캐너·테스트에 반영되는 회귀가 생기기 쉬우므로, 기본 목록은
+    /// `computeCodexScanRoots(home:)` 한 곳에서 만든다.
+    static let codexSessionsRelativePath = ".codex/sessions"
+    static let codexArchivedSessionsRelativePath = ".codex/archived_sessions"
+
     static var codexSessionsDir: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions")
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(codexSessionsRelativePath)
+    }
+
+    /// Codex가 보관한 세션은 원본 rollout을 유지한 채 이 루트로 이동한다.
+    /// 활성 세션만 읽으면 보관 직후 당일 사용량이 감소하므로, 두 루트를 하나의 논리적
+    /// 세션 집합으로 읽고 아래 resolver의 안정적인 이벤트 ID로 중복을 제거해야 한다.
+    static var codexArchivedSessionsDir: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(codexArchivedSessionsRelativePath)
+    }
+
+    /// 테스트 가능한 Codex 기본 스캔 루트 계산기.
+    /// 앱과 캐시는 아래의 `codexScanRoots`를 사용하고, 테스트는 가짜 home을 주입해
+    /// 실제 사용자 디렉터리나 로그인 환경에 의존하지 않고 두 기본 경로의 구성을 고정한다.
+    static func computeCodexScanRoots(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [URL] {
+        normalizedRoots([
+            home.appendingPathComponent(codexSessionsRelativePath),
+            home.appendingPathComponent(codexArchivedSessionsRelativePath),
+        ])
+    }
+
+    /// 스캐너·캐시가 공유하는 Codex 기본 루트 목록.
+    static var codexScanRoots: [URL] {
+        computeCodexScanRoots()
     }
     static var geminiTmpDir: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/tmp")
@@ -386,7 +420,7 @@ enum LocalUsageReader {
 
     /// 파일 내부 정보만 파싱. fork replay 여부는 다른 rollout과 대조.
     static func parseCodexRollout(_ url: URL, fmt: DateFormatter) -> CodexParsedRollout {
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+        func emptyRollout() -> CodexParsedRollout {
             return CodexParsedRollout(
                 path: url.path,
                 sessionID: nil,
@@ -396,6 +430,7 @@ enum LocalUsageReader {
                 events: []
             )
         }
+
         var events: [CodexUsageEvent] = []
         var turn = 0
         var sessionID: String?
@@ -407,52 +442,55 @@ enum LocalUsageReader {
         // 실모델은 아래 codexModel 이 로그에서 동적 추출(신모델 자동 대응). 이 값은 세션에 model 라인이
         // 아예 없을 때만 쓰는 버전무관 폴백 — Codex 비용은 항상 0이라 표시 숫자엔 영향 없다(업데이트 불필요).
         var model = "codex"
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            autoreleasepool {   // JSONSerialization 의 autoreleased 객체를 라인마다 배출(콜드 파싱 피크 억제)
-                let record = String(line)
-                // NOTE: 여기에 `line.contains("session_meta")` prefilter 를 넣으면 **느려진다**.
-                // 실측(실기기 57 rollout, release 빌드, best of 3 × 2회): 없음 1.80/1.84s vs 있음 2.17/2.19s.
-                // Swift `String.contains(_:)` 는 grapheme 단위 탐색이라 라인마다 훑는 비용이
-                // JSONSerialization 의 파싱보다 크다 — "파싱 줄 수를 줄이면 빨라진다"는 직관이 틀린 자리다.
-                if let meta = codexSessionMeta(record) {
-                    if sessionID == nil {
-                        // subagent meta는 `id`가 child이고 `session_id`가 parent일 수 있으므로 id 우선.
-                        sessionID = meta.id
-                        parentSessionID = meta.parentID
-                        forkedAt = meta.date
-                        isSubagent = meta.isSubagent
+        do {
+            try forEachCodexLine(in: url) { line in
+                autoreleasepool {   // JSONSerialization 의 autoreleased 객체를 라인마다 배출(콜드 파싱 피크 억제)
+                    // Data.range 는 바이트 탐색이라 String.contains 의 grapheme 스캔과 달리
+                    // 비대상 라인을 값싼 비용으로 건너뛸 수 있다. 대형 rollout 의 대부분은
+                    // response_item/delta 이며, 사용량 집계에 필요한 세 종류만 JSON 파싱한다.
+                    if line.range(of: codexSessionMetaMarker) != nil,
+                       let meta = codexSessionMeta(line) {
+                        if sessionID == nil {
+                            // subagent meta는 `id`가 child이고 `session_id`가 parent일 수 있으므로 id 우선.
+                            sessionID = meta.id
+                            parentSessionID = meta.parentID
+                            forkedAt = meta.date
+                            isSubagent = meta.isSubagent
+                        }
+                        if let id = meta.id, id != currentSessionID {
+                            currentSessionID = id
+                            previousUsageState = nil
+                        }
                     }
-                    if let id = meta.id, id != currentSessionID {
-                        currentSessionID = id
+                    if line.range(of: codexModelMarker) != nil, let m = codexModel(line) { model = m }
+                    guard line.range(of: codexTokenCountMarker) != nil else { return }
+                    guard let parsed = parseCodexLine(
+                        line, file: url.lastPathComponent, turn: turn, model: model, fmt: fmt
+                    ) else { return }
+                    defer { turn += 1 }
+
+                    // Codex는 같은 cumulative/last usage 상태를 그대로 다시 기록할 수 있음. replay trimming을
+                    // 하기 전에 파일 내부에서 정규화한다. 같은 세션의 연속 token_count 상태가 full vector까지
+                    // 같으면 새 토큰 기여가 없는 동일 snapshot이므로 한 번만 남긴다.
+                    if let state = parsed.usageState, let sessionID = currentSessionID {
+                        if let previous = previousUsageState,
+                           previous.sessionID == sessionID,
+                           previous.state == state {
+                            return
+                        }
+                        previousUsageState = (sessionID, state)
+                    } else {
                         previousUsageState = nil
                     }
+                    events.append(CodexUsageEvent(
+                        entry: parsed.entry,
+                        usageState: parsed.usageState,
+                        sessionID: currentSessionID
+                    ))
                 }
-                if line.contains("\"model\""), let m = codexModel(record) { model = m }
-                guard line.contains("token_count") else { return }
-                guard let parsed = parseCodexLine(
-                    record, file: url.lastPathComponent, turn: turn, model: model, fmt: fmt
-                ) else { return }
-                defer { turn += 1 }
-
-                // Codex는 같은 cumulative/last usage 상태를 그대로 다시 기록할 수 있음. replay trimming을
-                // 하기 전에 파일 내부에서 정규화한다. 같은 세션의 연속 token_count 상태가 full vector까지
-                // 같으면 새 토큰 기여가 없는 동일 snapshot이므로 한 번만 남긴다.
-                if let state = parsed.usageState, let sessionID = currentSessionID {
-                    if let previous = previousUsageState,
-                       previous.sessionID == sessionID,
-                       previous.state == state {
-                        return
-                    }
-                    previousUsageState = (sessionID, state)
-                } else {
-                    previousUsageState = nil
-                }
-                events.append(CodexUsageEvent(
-                    entry: parsed.entry,
-                    usageState: parsed.usageState,
-                    sessionID: currentSessionID
-                ))
             }
+        } catch {
+            return emptyRollout()
         }
         return CodexParsedRollout(
             path: url.path,
@@ -463,6 +501,48 @@ enum LocalUsageReader {
             events: events
         )
     }
+
+    /// 대형 JSONL 을 파일 크기와 무관한 메모리로 순회한다. 완성된 한 줄만
+    /// 소유하므로 피크는 파일 전체가 아니라 가장 긴 라인 + 청크 크기에 비례한다.
+    private static func forEachCodexLine(in url: URL, body: (Data) -> Void) throws {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+
+        let chunkSize = 1024 * 1024
+        var buffer = Data()
+        buffer.reserveCapacity(chunkSize)
+
+        while true {
+            let readChunk = try autoreleasepool { () throws -> Bool in
+                guard let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty else {
+                    return false
+                }
+
+                buffer.append(chunk)
+                var lineStart = buffer.startIndex
+                while lineStart < buffer.endIndex,
+                      let newline = buffer[lineStart...].firstIndex(of: 0x0A) {
+                    if lineStart < newline {
+                        body(Data(buffer[lineStart..<newline]))
+                    }
+                    lineStart = buffer.index(after: newline)
+                }
+                if lineStart != buffer.startIndex {
+                    buffer.removeSubrange(buffer.startIndex..<lineStart)
+                }
+                // FileHandle 의 Data bridge가 만든 autoreleased backing storage도 청크마다 배출한다.
+                // 이 경계가 없으면 청크 크기는 작아도 전체 파일을 다 읽을 때까지 RSS가 누적될 수 있다.
+                return true
+            }
+            if !readChunk { break }
+        }
+
+        if !buffer.isEmpty { body(buffer) }
+    }
+
+    private static let codexSessionMetaMarker = Data("session_meta".utf8)
+    private static let codexModelMarker = Data("\"model\"".utf8)
+    private static let codexTokenCountMarker = Data("token_count".utf8)
 
     /// 부모 탐색이 다루는 rollout 파일. 캐시는 `(path, mtime, size)` 로 blob 을 무효화하고 reader 는
     /// mtime 으로 조회 윈도우만 나누므로, 두 경로가 같은 표현을 공유한다.
@@ -494,6 +574,16 @@ enum LocalUsageReader {
             out.append(CodexRolloutFile(url: url, mtime: mtime, size: values.fileSize ?? 0))
         }
         return out
+    }
+
+    /// 활성·보관 루트처럼 여러 디렉터리를 하나의 Codex 파일 집합으로 합친다.
+    /// 먼저 공통 루트 정규화로 심볼릭 링크·중첩 루트를 접고, 이동 중 같은 rollout이
+    /// 두 루트에 잠시 동시에 보여도 실제 이벤트 중복 제거는
+    /// `resolveCodexRollouts`의 session/state ID가 담당한다.
+    static func codexRolloutFiles(in roots: [URL]) -> [CodexRolloutFile] {
+        normalizedRoots(roots)
+            .flatMap { codexRolloutFiles(in: $0) }
+            .sorted { $0.path < $1.path }
     }
 
     /// 조회 윈도우 안 rollout 에서 시작해, replay 대조에 필요한 부모(그 부모의 부모까지)를 dependency 로
@@ -568,7 +658,8 @@ enum LocalUsageReader {
 
     static func codexEntries(modifiedSince: Date, root: URL? = nil) -> [Entry] {
         let fmt = localDayFormatter()
-        let allFiles = codexRolloutFiles(in: root ?? codexSessionsDir)
+        let roots = root.map { [$0] } ?? codexScanRoots
+        let allFiles = codexRolloutFiles(in: roots)
         // 테스트/캐시 미사용 경로 — 아는 세션 id 가 없으니 파일명 힌트와 probe 만으로 부모를 찾는다.
         let (rollouts, includedPaths) = expandCodexParentClosure(
             windowFiles: allFiles.filter { $0.mtime >= modifiedSince },
@@ -588,9 +679,8 @@ enum LocalUsageReader {
         id.count >= 4 && id.contains { $0.isLetter || $0.isNumber }
     }
 
-    private static func codexSessionMeta(_ line: String) -> CodexSessionMeta? {
-        guard let data = line.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    private static func codexSessionMeta(_ line: Data) -> CodexSessionMeta? {
+        guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
               (obj["type"] as? String) == "session_meta",
               let payload = obj["payload"] as? [String: Any] else { return nil }
         let id = (payload["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
@@ -678,10 +768,12 @@ enum LocalUsageReader {
 
     private static func codexProbeOutcome(of line: Data) -> CodexProbeOutcome {
         guard !line.isEmpty else { return .keepScanning }
-        // 손상된 줄을 건너뛰면 뒤에 재삽입된 parent meta를 이 파일의 id로 오인할 수 있으므로 중단한다.
-        guard let text = String(data: line, encoding: .utf8) else { return .invalid }
-        if let meta = codexSessionMeta(text) { return .sessionID(meta.id) }
-        if text.contains("token_count") { return .stop }
+        // 손상된 줄을 건너뛰면 뒤에 재삽입된 parent meta를 이 파일의 id로
+        // 오인할 수 있으므로 중단한다. probe 는 1MiB 상한이 있어 UTF-8 검증 비용이 제한된다.
+        guard String(data: line, encoding: .utf8) != nil else { return .invalid }
+        if line.range(of: codexSessionMetaMarker) != nil,
+           let meta = codexSessionMeta(line) { return .sessionID(meta.id) }
+        if line.range(of: codexTokenCountMarker) != nil { return .stop }
         return .keepScanning
     }
 
@@ -867,10 +959,9 @@ enum LocalUsageReader {
     }
 
     private static func parseCodexLine(
-        _ line: String, file: String, turn: Int, model: String, fmt: DateFormatter
+        _ line: Data, file: String, turn: Int, model: String, fmt: DateFormatter
     ) -> ParsedCodexToken? {
-        guard let data = line.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
               let payload = obj["payload"] as? [String: Any],
               (payload["type"] as? String) == "token_count",
               let info = payload["info"] as? [String: Any],
@@ -1138,9 +1229,8 @@ enum LocalUsageReader {
         return nil
     }
 
-    private static func codexModel(_ line: String) -> String? {
-        guard let data = line.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    private static func codexModel(_ line: Data) -> String? {
+        guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
               let payload = obj["payload"] as? [String: Any] else { return nil }
         if let m = payload["model"] as? String { return m }
         if let tc = payload["turn_context"] as? [String: Any], let m = tc["model"] as? String { return m }

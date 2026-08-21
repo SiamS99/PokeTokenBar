@@ -116,6 +116,20 @@ struct L {
         t("\(percent) 남음", "\(percent) left", "残り\(percent)", "\(percent) restante")
     }
     var allOffHint: String { t("전부 끄면 캐릭터만 표시됩니다", "All off shows only the character", "すべてオフにするとキャラクターのみ表示", "Si desactivas todo, solo se mostrará el personaje") }
+    // MARK: 대표 포켓몬
+    var representativePokemonLabel: String {
+        t("대표 포켓몬", "Representative Pokémon", "代表ポケモン", "Pokémon representativo")
+    }
+    var representativeFollowCurrent: String {
+        t("현재 포켓몬 따라가기", "Follow current companion", "現在のポケモンに合わせる", "Seguir al compañero actual")
+    }
+    var representativeChooseFromDex: String {
+        t("도감에서 선택…", "Choose in Pokédex…", "図鑑で選ぶ…", "Elegir en la Pokédex…")
+    }
+    var representativeSet: String {
+        t("대표로 설정", "Set as representative", "代表ポケモンに設定", "Establecer como representante")
+    }
+    var representativeBadge: String { t("대표", "Representative", "代表", "Representante") }
     // MARK: 플로팅 펫
     var floatingPetSectionTitle: String { t("플로팅 펫", "Floating Pet", "フローティングペット", "Mascota flotante") }
     var floatingPetEnableLabel: String { t("플로팅 펫 표시", "Show floating pet", "フローティングペットを表示", "Mostrar mascota flotante") }
