@@ -13,6 +13,30 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private PopoverTab _currentTab = PopoverTab.Home;
     [ObservableProperty] private byte[]? _spriteBytes;
     [ObservableProperty] private bool _spriteLoading;
+    [ObservableProperty] private string? _toastMessage;
+    [ObservableProperty] private bool _toastVisible;
+
+    private int _toastToken;
+
+    /// <summary>
+    /// Shows a themed, self-dismissing toast instead of a native MessageBox —
+    /// keeps confirmations inside the app's own dark/gold styling. The text
+    /// (<see cref="ToastMessage"/>) is left in place after hiding — only
+    /// <see cref="ToastVisible"/> toggles — so the fade-out animates the
+    /// existing message instead of flashing an empty box.
+    /// </summary>
+    public void ShowToast(string message)
+    {
+        ToastMessage = message;
+        ToastVisible = true;
+        var token = ++_toastToken;
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(2000);
+            if (token == _toastToken)
+                await System.Windows.Application.Current.Dispatcher.InvokeAsync(() => ToastVisible = false);
+        });
+    }
 
     public MainViewModel(UsageStore store)
     {
@@ -51,6 +75,7 @@ public partial class MainViewModel : ObservableObject
         await Store.Companion.RefreshDisplayNameAsync();
         await ReloadSpriteAsync();
         OnPropertyChanged(nameof(CompanionName));
+        OnPropertyChanged(nameof(StageLabel));
         OnPropertyChanged(nameof(EggProgress));
         OnPropertyChanged(nameof(EggProgressValue));
         OnPropertyChanged(nameof(WalletDisplay));
@@ -100,6 +125,15 @@ public partial class MainViewModel : ObservableObject
                                       ? $"{tpm:N0} t/min"
                                       : "—";
     public string CompanionName => Store.Companion.CompanionDisplayName;
+    public string StageLabel
+    {
+        get
+        {
+            var mon = Store.Companion.State.Active;
+            if (mon is null) return "Egg";
+            return mon.StageIndex >= mon.TotalForms - 1 ? "Final form" : $"Stage {mon.StageIndex + 1} of {mon.TotalForms}";
+        }
+    }
     public string EggProgress
     {
         get

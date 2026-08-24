@@ -12,92 +12,49 @@
         Topmost="True"
         Deactivated="Window_Deactivated">
 
-    <Window.Resources>
-        <!-- Colours -->
-        <SolidColorBrush x:Key="BgBrush"      Color="#1A1A2E"/>
-        <SolidColorBrush x:Key="CardBrush"    Color="#16213E"/>
-        <SolidColorBrush x:Key="AccentBrush"  Color="#FFD700"/>
-        <SolidColorBrush x:Key="TextBrush"    Color="#E8E8E8"/>
-        <SolidColorBrush x:Key="SubtextBrush" Color="#9A9AB0"/>
-        <SolidColorBrush x:Key="TabBrush"     Color="#0F3460"/>
-
-        <!-- Tab button style -->
-        <Style x:Key="TabBtn" TargetType="Button">
-            <Setter Property="Background"  Value="Transparent"/>
-            <Setter Property="Foreground"  Value="{StaticResource SubtextBrush}"/>
-            <Setter Property="FontSize"    Value="11"/>
-            <Setter Property="Padding"     Value="4,8"/>
-            <Setter Property="Cursor"      Value="Hand"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center"/>
-                        </Border>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
-                </Trigger>
-            </Style.Triggers>
-        </Style>
-
-        <!-- Card style -->
-        <Style x:Key="Card" TargetType="Border">
-            <Setter Property="Background"     Value="{StaticResource CardBrush}"/>
-            <Setter Property="CornerRadius"   Value="8"/>
-            <Setter Property="Padding"        Value="12"/>
-            <Setter Property="Margin"         Value="0,4"/>
-        </Style>
-    </Window.Resources>
-
     <!-- Outer border gives rounded corners + shadow -->
-    <Border Background="{StaticResource BgBrush}"
-            CornerRadius="12"
+    <Border Background="{StaticResource WindowBg}"
+            CornerRadius="14"
             Margin="8">
         <Border.Effect>
-            <DropShadowEffect BlurRadius="16" ShadowDepth="4" Opacity="0.5" Color="Black"/>
+            <DropShadowEffect BlurRadius="24" ShadowDepth="6" Opacity="0.55" Color="Black"/>
         </Border.Effect>
 
         <Grid>
             <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>  <!-- Header -->
+                <RowDefinition Height="Auto"/>  <!-- Tab pills -->
                 <RowDefinition Height="*"/>     <!-- Content -->
-                <RowDefinition Height="Auto"/>  <!-- Tab bar -->
+                <RowDefinition Height="Auto"/>  <!-- Footer -->
             </Grid.RowDefinitions>
 
-            <!-- ── Header ─────────────────────────────────────────────────── -->
+            <!-- ── Tab pills ──────────────────────────────────────────────── -->
             <Border Grid.Row="0"
-                    Background="{StaticResource TabBrush}"
-                    CornerRadius="12,12,0,0"
-                    Padding="12,8">
-                <Grid>
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                        <TextBlock Text="🎮" FontSize="14" Margin="0,0,6,0"/>
-                        <TextBlock Text="PokeTokenBar"
-                                   Foreground="{StaticResource AccentBrush}"
-                                   FontSize="13" FontWeight="SemiBold"
-                                   VerticalAlignment="Center"/>
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button Command="{Binding RefreshCommand}"
-                                Style="{StaticResource TabBtn}"
-                                ToolTip="Refresh now"
-                                FontSize="14" Padding="4">🔄</Button>
-                        <Button Click="CloseButton_Click"
-                                Style="{StaticResource TabBtn}"
-                                FontSize="14" Padding="4,4,2,4">✕</Button>
-                    </StackPanel>
-                </Grid>
+                    Background="{StaticResource CardBrush}"
+                    CornerRadius="10"
+                    Margin="10,10,10,4" Padding="3">
+                <UniformGrid Columns="4">
+                    <Button Content="Home" Command="{Binding GoHomeCommand}"
+                            Style="{StaticResource TabPill}"
+                            Background="{Binding CurrentTab, Converter={x:Static views:TabPillBgConverter.Instance}, ConverterParameter=Home}"
+                            Foreground="{Binding CurrentTab, Converter={x:Static views:TabPillFgConverter.Instance}, ConverterParameter=Home}"/>
+                    <Button Content="Dex" Command="{Binding GoPokedexCommand}"
+                            Style="{StaticResource TabPill}"
+                            Background="{Binding CurrentTab, Converter={x:Static views:TabPillBgConverter.Instance}, ConverterParameter=Pokedex}"
+                            Foreground="{Binding CurrentTab, Converter={x:Static views:TabPillFgConverter.Instance}, ConverterParameter=Pokedex}"/>
+                    <Button Content="Shop" Command="{Binding GoShopCommand}"
+                            Style="{StaticResource TabPill}"
+                            Background="{Binding CurrentTab, Converter={x:Static views:TabPillBgConverter.Instance}, ConverterParameter=Shop}"
+                            Foreground="{Binding CurrentTab, Converter={x:Static views:TabPillFgConverter.Instance}, ConverterParameter=Shop}"/>
+                    <Button Content="Settings" Command="{Binding GoSettingsCommand}"
+                            Style="{StaticResource TabPill}"
+                            Background="{Binding CurrentTab, Converter={x:Static views:TabPillBgConverter.Instance}, ConverterParameter=Settings}"
+                            Foreground="{Binding CurrentTab, Converter={x:Static views:TabPillFgConverter.Instance}, ConverterParameter=Settings}"/>
+                </UniformGrid>
             </Border>
 
             <!-- ── Content area ───────────────────────────────────────────── -->
             <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" MaxHeight="520">
-                <Grid Margin="12">
+                <Grid Margin="14,6,14,8">
 
                     <!-- Home tab -->
                     <views:HomeView Visibility="{Binding CurrentTab,
@@ -125,16 +82,74 @@
                 </Grid>
             </ScrollViewer>
 
-            <!-- ── Tab bar ────────────────────────────────────────────────── -->
-            <Border Grid.Row="2"
-                    Background="{StaticResource TabBrush}"
-                    CornerRadius="0,0,12,12">
-                <UniformGrid Columns="4" Margin="4,0">
-                    <Button Command="{Binding GoHomeCommand}"     Style="{StaticResource TabBtn}">🏠 Home</Button>
-                    <Button Command="{Binding GoPokedexCommand}"  Style="{StaticResource TabBtn}">📖 Dex</Button>
-                    <Button Command="{Binding GoShopCommand}"     Style="{StaticResource TabBtn}">🛍 Shop</Button>
-                    <Button Command="{Binding GoSettingsCommand}" Style="{StaticResource TabBtn}">⚙️ Settings</Button>
-                </UniformGrid>
+            <!-- ── Footer — matches the macOS "↻ Updated just now … ⚙ ⏻" strip ────── -->
+            <Grid Grid.Row="2" Margin="16,2,10,10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="↻" FontSize="11" Foreground="{StaticResource SubtextBrush}" Margin="0,0,4,0"/>
+                    <TextBlock Foreground="{StaticResource SubtextBrush}" FontSize="10">
+                        <TextBlock.Text>
+                            <MultiBinding StringFormat="Updated {0:HH:mm:ss}">
+                                <Binding Path="Store.LastFetched"/>
+                            </MultiBinding>
+                        </TextBlock.Text>
+                    </TextBlock>
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Command="{Binding RefreshCommand}"
+                            Style="{StaticResource IconButton}"
+                            ToolTip="Refresh now">🔄</Button>
+                    <Button Click="CloseButton_Click"
+                            Style="{StaticResource IconButton}"
+                            ToolTip="Close">✕</Button>
+                </StackPanel>
+            </Grid>
+
+            <!-- ── Toast (replaces native MessageBox for confirmations) ─────── -->
+            <Border Grid.Row="0" Grid.RowSpan="3"
+                    VerticalAlignment="Bottom" HorizontalAlignment="Center"
+                    Margin="0,0,0,56" Padding="14,8"
+                    Background="{StaticResource CardAltBrush}"
+                    BorderBrush="{StaticResource AccentBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    IsHitTestVisible="False">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.5" Color="Black"/>
+                </Border.Effect>
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Opacity" Value="0"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding ToastVisible}" Value="False">
+                                <DataTrigger.EnterActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                              To="0" Duration="0:0:0.25"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </DataTrigger.EnterActions>
+                                <DataTrigger.ExitActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                              To="1" Duration="0:0:0.2"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </DataTrigger.ExitActions>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <TextBlock Text="{Binding ToastMessage}"
+                           Foreground="{StaticResource TextBrush}"
+                           FontSize="12" FontWeight="SemiBold"/>
             </Border>
         </Grid>
     </Border>

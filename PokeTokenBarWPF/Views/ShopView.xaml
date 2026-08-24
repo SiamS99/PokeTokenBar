@@ -2,52 +2,31 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <UserControl.Resources>
-        <SolidColorBrush x:Key="CardBrush"    Color="#16213E"/>
-        <SolidColorBrush x:Key="TextBrush"    Color="#E8E8E8"/>
-        <SolidColorBrush x:Key="SubtextBrush" Color="#9A9AB0"/>
-        <SolidColorBrush x:Key="AccentBrush"  Color="#FFD700"/>
-
-        <Style x:Key="ShopBtn" TargetType="Button">
-            <Setter Property="Background"     Value="#0F3460"/>
-            <Setter Property="Foreground"     Value="{StaticResource AccentBrush}"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Padding"        Value="10,5"/>
-            <Setter Property="Cursor"         Value="Hand"/>
-            <Setter Property="FontSize"       Value="11"/>
-        </Style>
-    </UserControl.Resources>
-
     <StackPanel>
-        <TextBlock Text="🛍 Shop"
-                   Foreground="{StaticResource AccentBrush}"
-                   FontSize="14" FontWeight="Bold" Margin="0,0,0,4"/>
 
         <!-- Wallet -->
-        <Border Background="#16213E" CornerRadius="8" Padding="10,6" Margin="0,0,0,10">
-            <StackPanel Orientation="Horizontal">
-                <TextBlock Text="💰 Wallet: "
-                           Foreground="{StaticResource SubtextBrush}" FontSize="11"/>
-                <TextBlock Text="{Binding WalletDisplay}"
-                           Foreground="{StaticResource AccentBrush}"
-                           FontSize="11" FontWeight="SemiBold"/>
+        <Border Style="{StaticResource Card}" Margin="0,0,0,10">
+            <StackPanel>
+                <TextBlock Text="Spendable tokens" Style="{StaticResource SectionHeader}"/>
+                <TextBlock Text="{Binding WalletDisplay}" Style="{StaticResource BigStatValue}" Margin="0,2,0,2"/>
+                <TextBlock Text="Spend the tokens you've used on items."
+                           Foreground="{StaticResource SubtextBrush}" FontSize="10"/>
             </StackPanel>
         </Border>
 
         <!-- Rare Candy -->
-        <Border Background="#16213E" CornerRadius="8" Padding="12,8" Margin="0,4">
+        <Border Style="{StaticResource Card}">
             <Grid>
-                <StackPanel>
+                <StackPanel Margin="0,0,70,0">
                     <TextBlock Text="🍬 Rare Candy" Foreground="{StaticResource TextBrush}"
                                FontSize="12" FontWeight="SemiBold"/>
-                    <TextBlock Text="Instantly boost your companion's progress by 100M tokens."
+                    <TextBlock Text="Instantly boosts your companion's progress by 100M tokens."
                                Foreground="{StaticResource SubtextBrush}"
-                               FontSize="10" TextWrapping="Wrap" Margin="0,2,0,4"/>
-                    <TextBlock Text="Cost: 500M tokens" Foreground="{StaticResource AccentBrush}"
-                               FontSize="10"/>
+                               FontSize="10" TextWrapping="Wrap" Margin="0,2,0,6"/>
+                    <TextBlock Text="Cost 500M" Foreground="{StaticResource SubtextBrush}" FontSize="10"/>
                 </StackPanel>
                 <Button HorizontalAlignment="Right" VerticalAlignment="Center"
-                        Style="{StaticResource ShopBtn}"
+                        Style="{StaticResource GhostButton}"
                         Command="{Binding UseRareCandyCommand}"
                         ToolTip="Use a Rare Candy">
                     Use
@@ -55,12 +34,11 @@
             </Grid>
         </Border>
 
-        <!-- Bag inventory display -->
-        <Border Background="#16213E" CornerRadius="8" Padding="12,8" Margin="0,4">
+        <!-- Bag inventory -->
+        <Border Style="{StaticResource Card}">
             <StackPanel>
-                <TextBlock Text="🎒 Bag" Foreground="{StaticResource TextBrush}"
-                           FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                <TextBlock Foreground="{StaticResource SubtextBrush}" FontSize="10">
+                <TextBlock Text="Bag" Style="{StaticResource SectionHeader}" Margin="0,0,0,6"/>
+                <TextBlock Foreground="{StaticResource TextBrush}" FontSize="11" Margin="0,0,0,2">
                     <TextBlock.Text>
                         <MultiBinding StringFormat="Rare Candy ×{0}">
                             <Binding Path="Store.Companion.State.Inventory[rareCandy]"
@@ -68,7 +46,7 @@
                         </MultiBinding>
                     </TextBlock.Text>
                 </TextBlock>
-                <TextBlock Foreground="{StaticResource SubtextBrush}" FontSize="10">
+                <TextBlock Foreground="{StaticResource TextBrush}" FontSize="11">
                     <TextBlock.Text>
                         <MultiBinding StringFormat="Mint ×{0}">
                             <Binding Path="Store.Companion.State.Inventory[mint]"

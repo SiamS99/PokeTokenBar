@@ -399,12 +399,32 @@ read_when:
   `Screen` API 를 새로 참조 추가하는 대신 `user32.dll` P/Invoke 로 해결(csproj 에 `UseWindowsForms` 없음).
   물리 픽셀→WPF 단위 변환은 `VisualTreeHelper.GetDpi(this)` 로 나눈다(첫 표시 전이라 완벽한 모니터별 DPI는
   아니고 근사치 — 혼합 DPI 멀티모니터 엣지케이스는 미해결, 실용적 트레이드오프로 남김).
-  **같은 메서드의 별개 결함**: `Top = screen.Bottom - ActualHeight - 16` 가 최초 호출 때 `ActualHeight==0`
-  이었다 — `Measure()` 만으론 `ActualHeight` 가 안 채워지고 `Arrange()` 까지 해야 채워지는데, 호출부
-  (`App.xaml.cs TogglePopup`)는 `Measure()` 만 하고 있었다. `ShowNearTray()` 안에서 `Measure`+`Arrange` 를
-  함께 하도록 옮겨 자체 완결시킴(호출부의 중복 `Measure` 호출 제거). 이 부류를 겪은 유일한 지점이라
-  스윕 결과 다른 `SystemParameters` 사용처는 없음. WPF 테스트 인프라가 없어 회귀 가드는 미작성 —
-  [[WPF 전이 이벤트 리렌더]] 항목과 마찬가지로 다음 WPF 테스트 인프라 도입 시 최우선 후보.
+  **같은 메서드의 별개 결함, 그리고 그 첫 고침도 틀렸다**: `Top = screen.Bottom - ActualHeight - 16` 가
+  최초 호출 때 `ActualHeight==0` 이었다. 1차 수정(이 세션 초반)은 `ShowNearTray()` 안에서
+  `Measure(...)` + `Arrange(new Rect(DesiredSize))` 를 `Show()` 전에 호출해 고쳤다고 판단했는데, **빌드만
+  확인하고 실제로 띄워 스크린샷으로 본 적이 없었다** — 나중에 (모던화 리디자인 뒤) 처음으로 실제 화면을
+  캡처해보니 팝업 대부분이 화면 아래로 잘려 나가 있었다: 탭 pill 바(콘텐츠 맨 위)만 화면 하단에 겨우
+  보이고 카드 전체가 화면 밖이었다. 원인은 `Window` 가 `FrameworkElement` 와 달리 **HWND 가 생기기
+  전엔 `SizeToContent` 가 진짜로 해석되지 않는다** — `Show()` 이전의 수동 `Measure`/`Arrange` 는 콘텐츠
+  레이아웃은 계산해도 `Window` 가 실제로 뜰 때 적용하는 최종 크기 결정 로직(HWND/DPI 연동)을 재현하지
+  않아 `ActualHeight` 를 과소평가했다. 진짜 고침: `Opacity=0` 으로 먼저 `Show()` 해 **진짜** 레이아웃
+  패스가 돌게 하고, `UpdateLayout()` 으로 강제 완료시킨 뒤 그제서야 정확해진 `ActualHeight` 로 위치를
+  계산하고, `Opacity=1` 로 드러낸다(깜빡임 없음 — `AllowsTransparency` 이미 켜져 있어 Opacity 조작이
+  공짜). **교훈**: 빌드 성공은 XAML/로직이 문법적으로 유효하다는 뜻일 뿐 레이아웃이 의도대로 나온다는
+  뜻이 아니다 — `Window` 크기/위치처럼 HWND 생성 시점에 좌우되는 로직은 실제로 띄워 스크린샷을 봐야
+  검증된 것으로 친다. 이 부류를 겪은 유일한 지점이라 스윕 결과 다른 `SystemParameters` 사용처는 없음.
+  **세 번째 결함, 같은 근본 원인의 연장**: `Left`/`Top` 은 `ShowNearTray()` 호출 시점에 **한 번만**
+  계산됐다. `SizeToContent="Height"` 인 창은 `Top` 을 고정한 채 아래로만 자란다 — 그런데 탭마다 콘텐츠
+  높이가 다르다(Settings 가 Home 보다 훨씬 김). 팝업을 이미 연 채로 탭을 바꾸면 창이 늘어나며 하단이
+  화면 밖으로 밀려났다("탭 바꾸면 가끔 다 안 보인다" 리포트). 고침: 열 때의 앵커(`_anchorWorkArea`/
+  `_anchorDpi`)를 캐시해두고, `Window.SizeChanged`(`e.HeightChanged`)마다 그 앵커 기준으로 `Left`/`Top`
+  을 재계산해 **하단우측 모서리가 고정되게** 한다(폭은 안 변하니 `Left` 는 사실상 불변, `Top` 만 위아래로
+  재조정됨). 앵커를 새로 조회하지 않고 캐시를 재사용하는 이유: 리사이즈 시점의 커서 위치는 이미 팝업
+  내부일 수 있어(설정 탭을 클릭한 직후 등) 그걸로 모니터를 다시 판정하면 엉뚱한 모니터를 앵커로 삼는다.
+  두 개 결함 모두 **실제로 띄워 스크린샷을 찍기 전까진 안 보였다** — 빌드 성공과 코드 리뷰만으로는
+  `Window` 크기/위치 로직의 정합성을 확인할 수 없다는 교훈이 이걸로 두 번째로 확인됨.
+  WPF 테스트 인프라가 없어 회귀 가드는 미작성 — [[WPF 전이 이벤트 리렌더]] 항목과 마찬가지로 다음 WPF
+  테스트 인프라 도입 시 최우선 후보.
 
 ## 에너지 (상시 표시 애니메이션)
 

@@ -4,141 +4,122 @@
              xmlns:views="clr-namespace:PokeTokenBar.Views"
              xmlns:core="clr-namespace:PokeTokenBar.Core">
 
-    <UserControl.Resources>
-        <SolidColorBrush x:Key="BgBrush"      Color="#1A1A2E"/>
-        <SolidColorBrush x:Key="CardBrush"    Color="#16213E"/>
-        <SolidColorBrush x:Key="AccentBrush"  Color="#FFD700"/>
-        <SolidColorBrush x:Key="TextBrush"    Color="#E8E8E8"/>
-        <SolidColorBrush x:Key="SubtextBrush" Color="#9A9AB0"/>
-        <SolidColorBrush x:Key="GreenBrush"   Color="#4CAF50"/>
-        <SolidColorBrush x:Key="OrangeBrush"  Color="#FF9800"/>
-
-        <Style x:Key="Label" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="{StaticResource SubtextBrush}"/>
-            <Setter Property="FontSize"   Value="10"/>
-        </Style>
-        <Style x:Key="Value" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-            <Setter Property="FontSize"   Value="13"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-        </Style>
-        <Style x:Key="Card" TargetType="Border">
-            <Setter Property="Background"   Value="{StaticResource CardBrush}"/>
-            <Setter Property="CornerRadius" Value="8"/>
-            <Setter Property="Padding"      Value="12"/>
-            <Setter Property="Margin"       Value="0,4"/>
-        </Style>
-    </UserControl.Resources>
-
     <StackPanel>
 
-        <!-- ── Companion card ─────────────────────────────────────────────── -->
-        <Border Style="{StaticResource Card}">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="96"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
+        <!-- ── Companion ──────────────────────────────────────────────────── -->
+        <Grid Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="76"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
 
-                <!-- Sprite / egg display -->
-                <Border Grid.Column="0"
-                        Width="80" Height="80"
-                        Background="#0F3460"
-                        CornerRadius="8">
-                    <views:SpriteView x:Name="SpriteCtrl" DataContext="{Binding}"/>
-                </Border>
+            <!-- Sprite / egg display -->
+            <Border Grid.Column="0"
+                    Width="72" Height="72"
+                    Background="{StaticResource CardBrush}"
+                    CornerRadius="10">
+                <views:SpriteView x:Name="SpriteCtrl" DataContext="{Binding}"/>
+            </Border>
 
-                <!-- Companion info -->
-                <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="8,0,0,0">
+            <!-- Companion info -->
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="12,0,0,0">
+                <StackPanel Orientation="Horizontal">
                     <TextBlock Text="{Binding CompanionName}"
-                               Foreground="{StaticResource AccentBrush}"
-                               FontSize="15" FontWeight="Bold"/>
+                               Foreground="{StaticResource TextBrush}"
+                               FontSize="15" FontWeight="Bold" VerticalAlignment="Center"/>
 
-                    <!-- Evolution / egg progress bar -->
-                    <TextBlock Margin="0,4,0,2" Style="{StaticResource Label}">
-                        <TextBlock.Text>
-                            <MultiBinding StringFormat="Progress: {0}">
-                                <Binding Path="EggProgress"/>
-                            </MultiBinding>
-                        </TextBlock.Text>
-                    </TextBlock>
-                    <ProgressBar Value="{Binding EggProgressValue, Mode=OneWay}"
-                                 Minimum="0" Maximum="1"
-                                 Height="6" Margin="0,0,0,4"
-                                 Foreground="{StaticResource AccentBrush}"
-                                 Background="#0F3460"/>
+                    <!-- Rarity badge -->
+                    <Border Margin="6,0,0,0" Padding="6,1" CornerRadius="6"
+                            VerticalAlignment="Center"
+                            Visibility="{Binding Store.Companion.State.Active,
+                                Converter={x:Static views:NullToVisConverter.Instance}}"
+                            Background="{Binding Store.Companion.State.Active.Rarity,
+                                Converter={x:Static views:RarityToBrushConverter.Instance}}">
+                        <TextBlock Text="{Binding Store.Companion.State.Active.Rarity}"
+                                   FontSize="8" FontWeight="Bold" Foreground="White"/>
+                    </Border>
 
-                    <!-- Rarity / shiny badge -->
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="{Binding Store.Companion.State.Active.Rarity, FallbackValue=Egg}"
-                                   Foreground="{StaticResource SubtextBrush}"
-                                   FontSize="10" Margin="0,0,6,0"/>
-                        <TextBlock Text="✨" FontSize="10"
-                                   Visibility="{Binding Store.Companion.State.Active.IsShiny,
-                                       Converter={x:Static views:BoolToVisConverter.Instance}}"/>
-                    </StackPanel>
-                </StackPanel>
-            </Grid>
-        </Border>
-
-        <!-- ── Today's usage card ─────────────────────────────────────────── -->
-        <Border Style="{StaticResource Card}">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-
-                <StackPanel Grid.Column="0">
-                    <TextBlock Text="Today" Style="{StaticResource Label}"/>
-                    <TextBlock Text="{Binding TodayTokens}" Style="{StaticResource Value}"/>
-                    <TextBlock Text="{Binding TodayCost}"
-                               Foreground="{StaticResource SubtextBrush}" FontSize="10"/>
+                    <!-- Shiny sparkle -->
+                    <TextBlock Text="✨" FontSize="10" Margin="4,0,0,0" VerticalAlignment="Center"
+                               Visibility="{Binding Store.Companion.State.Active.IsShiny,
+                                   Converter={x:Static views:BoolToVisConverter.Instance}}"/>
                 </StackPanel>
 
-                <StackPanel Grid.Column="1">
-                    <TextBlock Text="This Week" Style="{StaticResource Label}"/>
-                    <TextBlock Text="{Binding WeekTokens}" Style="{StaticResource Value}"/>
-                </StackPanel>
+                <TextBlock Text="{Binding StageLabel}"
+                           Foreground="{StaticResource SubtextBrush}"
+                           FontSize="10" Margin="0,2,0,6"/>
 
-                <StackPanel Grid.Column="2">
-                    <TextBlock Text="This Month" Style="{StaticResource Label}"/>
-                    <TextBlock Text="{Binding MonthTokens}" Style="{StaticResource Value}"/>
-                </StackPanel>
-            </Grid>
-        </Border>
+                <!-- Progress bar (Grid star-columns — robust across WPF versions, unlike a
+                     restyled ProgressBar template which risks a silently-broken fill). -->
+                <Grid Height="5">
+                    <Border Background="{StaticResource DividerBrush}" CornerRadius="3"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="{Binding EggProgressValue,
+                                Converter={x:Static views:FractionToStarWidthConverter.Instance}}"/>
+                            <ColumnDefinition Width="{Binding EggProgressValue,
+                                Converter={x:Static views:FractionToStarWidthConverter.Instance}, ConverterParameter=invert}"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0" Background="{StaticResource TextBrush}" CornerRadius="3"/>
+                    </Grid>
+                </Grid>
 
-        <!-- ── Burn rate card ─────────────────────────────────────────────── -->
-        <Border Style="{StaticResource Card}">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding EggProgress, StringFormat='{}{0} to next stage'}"
+                           Foreground="{StaticResource SubtextBrush}"
+                           FontSize="9" Margin="0,4,0,0"/>
+            </StackPanel>
+        </Grid>
 
-                <StackPanel Grid.Column="0">
-                    <TextBlock Text="Burn Rate" Style="{StaticResource Label}"/>
-                    <TextBlock Text="{Binding BurnRate}" Style="{StaticResource Value}"/>
-                </StackPanel>
+        <Border Height="1" Background="{StaticResource DividerBrush}" Margin="0,0,0,12"/>
 
-                <StackPanel Grid.Column="1">
-                    <TextBlock Text="Wallet 💰" Style="{StaticResource Label}"/>
-                    <TextBlock Text="{Binding WalletDisplay}" Style="{StaticResource Value}"
-                               Foreground="{StaticResource AccentBrush}"/>
-                </StackPanel>
-            </Grid>
-        </Border>
+        <!-- ── Today's usage ─────────────────────────────────────────────── -->
+        <TextBlock Text="Today's tokens" Style="{StaticResource SectionHeader}" Margin="0,0,0,2"/>
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="{Binding TodayTokens}" Style="{StaticResource BigStatValue}"/>
+            <TextBlock Grid.Column="1" Text="{Binding TodayCost}"
+                       Foreground="{StaticResource SubtextBrush}" FontSize="12"
+                       VerticalAlignment="Bottom" Margin="0,0,0,4"/>
+        </Grid>
 
-        <!-- ── Last updated ───────────────────────────────────────────────── -->
-        <TextBlock HorizontalAlignment="Right" Margin="0,4,0,0"
-                   Foreground="{StaticResource SubtextBrush}" FontSize="9">
-            <TextBlock.Text>
-                <MultiBinding StringFormat="Updated: {0:HH:mm:ss}">
-                    <Binding Path="Store.LastFetched"/>
-                </MultiBinding>
-            </TextBlock.Text>
-        </TextBlock>
+        <Grid Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
 
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="This week" Style="{StaticResource SectionHeader}"/>
+                <TextBlock Text="{Binding WeekTokens}" Style="{StaticResource StatValue}" Margin="0,2,0,0"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1">
+                <TextBlock Text="This month" Style="{StaticResource SectionHeader}"/>
+                <TextBlock Text="{Binding MonthTokens}" Style="{StaticResource StatValue}" Margin="0,2,0,0"/>
+            </StackPanel>
+        </Grid>
+
+        <Border Height="1" Background="{StaticResource DividerBrush}" Margin="0,14,0,12"/>
+
+        <!-- ── Burn rate + wallet ────────────────────────────────────────── -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="Burn rate" Style="{StaticResource SectionHeader}"/>
+                <TextBlock Text="{Binding BurnRate}" Style="{StaticResource StatValue}" Margin="0,2,0,0"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1">
+                <TextBlock Text="Wallet" Style="{StaticResource SectionHeader}"/>
+                <TextBlock Text="{Binding WalletDisplay}"
+                           Foreground="{StaticResource AccentBrush}"
+                           FontSize="13" FontWeight="SemiBold" Margin="0,2,0,0"/>
+            </StackPanel>
+        </Grid>
     </StackPanel>
 </UserControl>

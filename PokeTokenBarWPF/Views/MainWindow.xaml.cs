@@ -9,11 +9,23 @@ namespace PokeTokenBar.Views;
 
 public partial class MainWindow : Window
 {
+    // Cached from the monitor under the cursor at open time — reused on every
+    // resize so the popup keeps its bottom-right corner anchored as tabs with
+    // different content heights (e.g. Settings vs. Home) grow or shrink it,
+    // instead of only ever positioning once and letting it extend off-screen.
+    private Rect _anchorWorkArea;
+    private DpiScale _anchorDpi;
+
     public MainWindow(MainViewModel vm)
     {
         InitializeComponent();
         DataContext = vm;
         _ = vm.ReloadSpriteAsync();
+
+        SizeChanged += (_, e) =>
+        {
+            if (e.HeightChanged) RepositionToAnchor();
+        };
     }
 
     private void Window_Deactivated(object sender, EventArgs e)
@@ -31,25 +43,40 @@ public partial class MainWindow : Window
     /// </summary>
     public void ShowNearTray()
     {
-        // Force a real layout pass so ActualHeight reflects the true content
-        // size even on the very first call — Measure alone leaves it at 0,
-        // since only Arrange populates it, which pushed the window mostly
-        // off-screen on first open.
-        Measure(new Size(Width, double.PositiveInfinity));
-        Arrange(new Rect(DesiredSize));
+        // Show first, invisibly, so SizeToContent runs its *real* layout pass —
+        // a Window only resolves its final size once its HWND exists (unlike a
+        // plain FrameworkElement), so calling Measure/Arrange before Show() does
+        // not reliably predict ActualHeight (verified: it under-reported, pushing
+        // most of the window below the screen on first open).
+        Opacity = 0;
+        Show();
+        UpdateLayout();
 
         // Anchor to the monitor under the cursor (where the tray icon was
         // actually clicked), not SystemParameters.WorkArea — that's always
         // the *primary* display, which leaves the popup rendered off on a
         // monitor the user isn't looking at on multi-monitor setups.
-        var workArea = NativeMethods.GetWorkAreaUnderCursor();
-        var dpi = VisualTreeHelper.GetDpi(this);
+        _anchorWorkArea = NativeMethods.GetWorkAreaUnderCursor();
+        _anchorDpi = VisualTreeHelper.GetDpi(this);
+        RepositionToAnchor();
 
-        Left = workArea.Right  / dpi.DpiScaleX - Width - 16;
-        Top  = workArea.Bottom / dpi.DpiScaleY - ActualHeight - 16;
-
-        Show();
+        Opacity = 1;
         Activate();
+    }
+
+    /// <summary>
+    /// Re-applies Left/Top from the cached anchor so the window's bottom-right
+    /// corner stays put while its height changes (SizeToContent="Height" means
+    /// switching tabs — Settings is taller than Home — resizes the window, and
+    /// without this it only ever grows downward off-screen since Top was fixed
+    /// at open time).
+    /// </summary>
+    private void RepositionToAnchor()
+    {
+        if (_anchorWorkArea.Width <= 0) return; // not shown yet — nothing cached
+
+        Left = _anchorWorkArea.Right  / _anchorDpi.DpiScaleX - Width - 16;
+        Top  = _anchorWorkArea.Bottom / _anchorDpi.DpiScaleY - ActualHeight - 16;
     }
 }
 
@@ -109,6 +136,34 @@ public class TabVisConverter : IValueConverter
             return tab.ToString() == target ? Visibility.Visible : Visibility.Collapsed;
         return Visibility.Collapsed;
     }
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+// ── Tab pill selected-state converters ───────────────────────────────────────
+
+public class TabPillBgConverter : IValueConverter
+{
+    public static readonly TabPillBgConverter Instance = new();
+
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is PopoverTab tab && parameter is string target && tab.ToString() == target
+            ? Application.Current.Resources["CardAltBrush"]
+            : Brushes.Transparent;
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+public class TabPillFgConverter : IValueConverter
+{
+    public static readonly TabPillFgConverter Instance = new();
+
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is PopoverTab tab && parameter is string target && tab.ToString() == target
+            ? Application.Current.Resources["TextBrush"]
+            : Application.Current.Resources["SubtextBrush"];
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         => throw new NotSupportedException();

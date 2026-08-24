@@ -16,8 +16,7 @@ public partial class SettingsView : UserControl
             vm.Store.Settings.Save();
             vm.Store.ApplyRefreshInterval();
             StartupManager.SetEnabled(vm.Store.Settings.LaunchAtStartup);
-            MessageBox.Show("Settings saved.", "PokeTokenBar",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            vm.ShowToast("✓ Settings saved");
         }
     }
 }
