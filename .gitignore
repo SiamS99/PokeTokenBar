@@ -32,3 +32,13 @@ docs/*
 
 # Local-only review-gate opt-out (not published)
 .no-review-gate
+
+# .NET / WPF build output (PokeTokenBarWPF/)
+PokeTokenBarWPF/bin/
+PokeTokenBarWPF/obj/
+PokeTokenBarWPF/publish/
+PokeTokenBarWPF/publish_new/
+*.user
+
+# Visual Studio local state
+.vs/
