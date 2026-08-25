@@ -39,6 +39,7 @@ final class PopoverNavigation {
     }
 }
 
+@MainActor
 struct PopoverView: View {
     @Environment(UsageStore.self) private var store
     @Environment(CompanionStore.self) private var companion
@@ -250,6 +251,7 @@ struct PopoverView: View {
         // (자동 Keychain 읽기는 팝업 방지로 여전히 안 함 — 발견성만 살린다.)
         case "claude_code": return !store.disableKeychainAccess || store.limits != nil || store.limitsAuthExpired
         case "codex": return store.codexLimits?.hasVisibleLimit == true
+        case "antigravity": return !store.disableKeychainAccess || store.antigravityLimits?.hasVisibleLimit == true || store.antigravityLimitsAuthExpired
         default: return false
         }
     }
@@ -308,6 +310,13 @@ struct PopoverView: View {
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
+                // 계정 라벨 — 두 계정이 한 Keychain 항목을 번갈아 쓰는 기기에서 이 한도가
+                // 어느 계정 것인지 알려준다 (없으면 라벨 없이 종전과 동일).
+                if let account = limits.accountDisplay {
+                    Text(l.limitsAccount(account))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
                 // 세션 만료 시 표시값은 만료 전 기준 → 흐리게 처리해 "현재 값 아님"을 시각적으로 전달
                 VStack(alignment: .leading, spacing: 8) {
                     limitRow(name: l.fiveHourSession, window: limits.fiveHour)
@@ -359,7 +368,111 @@ struct PopoverView: View {
                     codexSpendLimitRow(bucket.individualLimit)
                 }
             }
+            if selectedSnapshot?.providerID == "antigravity" {
+                antigravityLimitsContent
+            }
         }
+    }
+
+    @ViewBuilder
+    private var antigravityLimitsContent: some View {
+        if store.antigravityLimitsAuthExpired {
+            antigravityAuthExpiredNotice
+        } else if !store.disableKeychainAccess && (store.antigravityLimits == nil || store.antigravityLimitsStale) {
+            antigravityRefreshRow
+        }
+        if let status = store.antigravityLimits, status.hasVisibleLimit {
+            if store.antigravityLimitsStale {
+                staleBadge(updatedAt: store.antigravityLimitsUpdatedAt)
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(Array(status.groups.enumerated()), id: \.offset) { _, group in
+                    VStack(alignment: .leading, spacing: 4) {
+                        let groupTitle = group.displayName.localizedCaseInsensitiveContains("gemini")
+                            ? l.antigravityGeminiGroup
+                            : (group.displayName.localizedCaseInsensitiveContains("claude") ? l.antigravityThirdPartyGroup : group.displayName)
+                        Text(groupTitle)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+
+                        ForEach(group.buckets, id: \.bucketId) { bucket in
+                            antigravityBucketRow(bucket)
+                        }
+                    }
+                }
+            }
+            .opacity(store.antigravityLimitsAuthExpired ? 0.5 : 1)
+        }
+    }
+
+    @ViewBuilder
+    private func antigravityBucketRow(_ bucket: AntigravityQuotaBucket) -> some View {
+        let name = l.antigravityWindow(window: bucket.window, bucketId: bucket.bucketId)
+        let utilization = bucket.usedPercent
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(name)
+                    .font(.callout)
+                Spacer()
+                Text(limitPercentText(utilization))
+                    .font(.callout)
+                    .monospacedDigit()
+                    .foregroundStyle(limitColor(utilization))
+                if let reset = bucket.resetDate {
+                    Text("· \(reset, style: .relative)")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            ProgressView(value: min(utilization, 100), total: 100)
+                .tint(limitColor(utilization))
+                .controlSize(.small)
+        }
+    }
+
+    @ViewBuilder
+    private var antigravityRefreshRow: some View {
+        Button {
+            Task { await store.refreshAntigravityLimitsFromKeychain() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "key.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(l.limitsTapToLoad)
+                    .font(.caption)
+                Spacer()
+                Text(l.refresh)
+                    .font(.caption)
+                    .foregroundStyle(Color.accentColor)
+            }
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var antigravityAuthExpiredNotice: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(l.antigravityAuthExpiredTitle)
+                    .font(.caption).fontWeight(.medium)
+            }
+            Text(l.antigravityAuthExpiredHint)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Button(l.retry) {
+                Task { await store.refreshAntigravityLimitsFromKeychain() }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.mini)
+            .padding(.top, 2)
+        }
+        .padding(8)
+        .background(Color.orange.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
 
@@ -623,6 +736,7 @@ struct PopoverView: View {
 /// "Curso/r"·"Code/x" 처럼 **단어 중간에서** 접고 탭 바가 2~3줄이 된다.
 /// 가로 스크롤 + `lineLimit(1)`/`fixedSize` 로 각 탭이 항상 자연 폭 한 줄을 유지한다.
 /// (`Spacer()` 는 가로 ScrollView 안에서 무한 확장하므로 쓰지 않는다.)
+@MainActor
 struct ProviderTabBar: View {
     let snapshots: [ProviderSnapshot]
     let selectedID: String?

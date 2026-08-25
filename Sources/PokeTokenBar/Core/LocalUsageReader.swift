@@ -1,6 +1,6 @@
 import Foundation
 
-/// Claude/Codex 로컬 사용 로그를 직접 파싱해 토큰/비용을 집계한다(ccusage CLI 대체).
+/// 로컬 AI 코딩 도구 사용 로그를 직접 파싱해 토큰/비용을 집계한다(ccusage CLI 대체).
 ///
 /// - Claude: `~/.claude/projects/**/*.jsonl` 의 `type:"assistant"` 라인
 ///   (`message.usage` 4종 토큰, `message.model`, `message.id`+`requestId`, `timestamp`).
@@ -8,6 +8,8 @@ import Foundation
 /// - Codex: `~/.codex/sessions/**/rollout-*.jsonl` 및 보관된
 ///   `~/.codex/archived_sessions/rollout-*.jsonl` 의
 ///   `event_msg.payload.type:"token_count"` (`info.last_token_usage` 턴 델타) 합산.
+/// - Pi: `~/.pi/agent/sessions/**/*.jsonl` 의 message/compaction/branch-summary direct usage.
+///   reasoning 은 output 에 이미 포함되며, fork 가 복사한 entry id 는 전역 중복 제거한다.
 ///
 /// 성능: mtime 윈도우로 스캔 파일을 한정(범위 시작 이전에 수정된 파일은 범위 내 엔트리가 없음).
 enum LocalUsageReader {
@@ -59,6 +61,8 @@ enum LocalUsageReader {
     ///
     /// - `CLAUDE_CONFIG_DIR`: 사용자가 설정 위치를 옮긴 경우. 콤마로 여러 개를 줄 수 있고 각각 `<값>/projects`.
     /// - `~/.config/claude/projects`, `~/.claude/projects`: CLI 기본 위치(전자는 XDG 스타일 설치).
+    /// - 사용자 지정 스캔 폴더(설정): 기본 위치 밖의 로그. `CustomScanRoots.union` 으로
+    ///   기본 루트에 *더하기만* 한다. 조상 경로는 기본 루트를 접어 없애지 못하게 버린다.
     /// - Claude Desktop 임베디드 세션: 세션 디렉터리마다 CLI 와 같은 모양의 `.claude/projects` 를 갖는다.
     ///   Desktop 으로 일한 사용량이 여기에만 남으므로 빼면 조용히 누락된다.
     /// 계산에 파일시스템 탐색 + (GUI 앱에선) 로그인 셸 조회가 들어가는데 새로고침은 분 단위로 돈다.
@@ -68,6 +72,7 @@ enum LocalUsageReader {
     /// 테스트·진단용 — 캐시를 무시하고 지금 상태로 계산한다.
     static func computeClaudeProjectRoots(
         configDirValue: String? = shellAwareClaudeConfigDir(),
+        customRootsValue: String? = nil,
         home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [URL]
     {
         var roots: [URL] = []
@@ -86,7 +91,45 @@ enum LocalUsageReader {
         for store in ["local-agent-mode-sessions", "claude-code-sessions"] {
             roots.append(contentsOf: embeddedClaudeProjectRoots(under: desktop.appendingPathComponent(store)))
         }
-        return normalizedRoots(roots)
+        // Custom roots are unioned *after* curated defaults so an ancestor extra cannot
+        // evict `~/.claude/projects` (#162-B / #177).
+        return CustomScanRoots.union(defaults: roots, extraRaw: customRootsValue)
+    }
+
+    /// Setting change must not wait for the 300s TTL — the next refresh should see the folder.
+    static func invalidateProjectRootsCache() { rootsCache.invalidate() }
+
+    static func codexSessionRoots(
+        customRootsValue: String? = nil,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [URL] {
+        CustomScanRoots.union(
+            defaults: computeCodexScanRoots(home: home),
+            extraRaw: customRootsValue)
+    }
+
+    static func geminiScanRoots(
+        customRootsValue: String? = nil,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [URL] {
+        CustomScanRoots.union(
+            defaults: [home.appendingPathComponent(".gemini/tmp")],
+            extraRaw: customRootsValue)
+    }
+
+    static func grokSessionRoots(
+        customRootsValue: String? = nil,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [URL] {
+        let curated: URL
+        if home == FileManager.default.homeDirectoryForCurrentUser,
+           let env = UsageEnvironment.value("GROK_HOME")?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !env.isEmpty {
+            curated = URL(fileURLWithPath: env).appendingPathComponent("sessions")
+        } else {
+            curated = home.appendingPathComponent(".grok/sessions")
+        }
+        return CustomScanRoots.union(defaults: [curated], extraRaw: customRootsValue)
     }
 
     /// `CLAUDE_CONFIG_DIR` 값. Finder/launchd 로 뜬 `.app` 은 셸 환경을 상속하지 않으므로
@@ -118,12 +161,20 @@ enum LocalUsageReader {
             lock.unlock()
             if let cached = hit.0, let at = hit.1, Date().timeIntervalSince(at) < ttl { return cached }
 
-            let fresh = computeClaudeProjectRoots()
+            let fresh = computeClaudeProjectRoots(
+                customRootsValue: CustomScanRoots.storedValue(for: "claude_code"))
             lock.lock()
             cached = fresh
             computedAt = Date()
             lock.unlock()
             return fresh
+        }
+
+        func invalidate() {
+            lock.lock()
+            cached = nil
+            computedAt = nil
+            lock.unlock()
         }
     }
 
@@ -239,6 +290,31 @@ enum LocalUsageReader {
     static var codexScanRoots: [URL] {
         computeCodexScanRoots()
     }
+
+    static let defaultPiSessionsPath = ".pi/agent/sessions"
+
+    static var piSessionRoots: [URL] {
+        computePiSessionRoots(
+            agentDirValue: UsageEnvironment.value("PI_CODING_AGENT_DIR"),
+            sessionDirValue: UsageEnvironment.value("PI_CODING_AGENT_SESSION_DIR"))
+    }
+
+    static func computePiSessionRoots(
+        agentDirValue: String? = UsageEnvironment.value("PI_CODING_AGENT_DIR"),
+        sessionDirValue: String? = UsageEnvironment.value("PI_CODING_AGENT_SESSION_DIR"),
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [URL] {
+        var roots = [home.appendingPathComponent(defaultPiSessionsPath)]
+        if let agentDirValue, !agentDirValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            roots.append(URL(fileURLWithPath: NSString(string: agentDirValue).expandingTildeInPath)
+                .appendingPathComponent("sessions"))
+        }
+        if let sessionDirValue, !sessionDirValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            roots.append(URL(fileURLWithPath: NSString(string: sessionDirValue).expandingTildeInPath))
+        }
+        return normalizedRoots(roots)
+    }
+
     static var geminiTmpDir: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/tmp")
     }
@@ -325,6 +401,92 @@ enum LocalUsageReader {
             output: intValue(usage["output_tokens"]),
             cacheWrite: intValue(usage["cache_creation_input_tokens"]),
             cacheRead: intValue(usage["cache_read_input_tokens"]))
+    }
+
+    static func parsePiFile(_ url: URL, fmt: DateFormatter) -> [Entry]? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        var out: [Entry] = []
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard line.contains("\"usage\"") else { continue }
+            autoreleasepool {
+                guard let data = String(line).data(using: .utf8),
+                      let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let id = envelope["id"] as? String, !id.isEmpty,
+                      let type = envelope["type"] as? String else { return }
+
+                let usage: [String: Any]?
+                let date: Date?
+                switch type {
+                case "message":
+                    guard let message = envelope["message"] as? [String: Any],
+                          message["stopReason"] as? String != "aborted",
+                          message["stopReason"] as? String != "error",
+                          let messageUsage = message["usage"] as? [String: Any] else { return }
+                    usage = messageUsage
+                    date = piMessageDate(message, envelope: envelope)
+                case "compaction", "branch_summary":
+                    usage = envelope["usage"] as? [String: Any]
+                    date = piEnvelopeDate(envelope)
+                default:
+                    return
+                }
+                guard let usage, let date,
+                      let entry = piEntry(id: id, date: date, usage: usage, fmt: fmt) else { return }
+                out.append(entry)
+            }
+        }
+        return dedupKeepMax(out)
+    }
+
+    static func piEntries(modifiedSince: Date, roots: [URL] = piSessionRoots) -> [Entry] {
+        var all: [Entry] = []
+        let fmt = localDayFormatter()
+        for root in normalizedRoots(roots) {
+            for file in jsonlFiles(in: root, modifiedSince: modifiedSince) {
+                all.append(contentsOf: parsePiFile(file, fmt: fmt) ?? [])
+            }
+        }
+        return dedupKeepMax(all)
+    }
+
+    private static func piEntry(
+        id: String, date: Date, usage: [String: Any], fmt: DateFormatter
+    ) -> Entry? {
+        let names = ["input", "output", "cacheWrite", "cacheRead"]
+        let hasGranularUsage = names.contains { intOrNil(usage[$0]) != nil }
+        let input: Int
+        let output: Int
+        let cacheWrite: Int
+        let cacheRead: Int
+        if hasGranularUsage {
+            input = intOrNil(usage["input"]) ?? 0
+            output = intOrNil(usage["output"]) ?? 0 // Pi reasoning is already a subset of output.
+            cacheWrite = intOrNil(usage["cacheWrite"]) ?? 0
+            cacheRead = intOrNil(usage["cacheRead"]) ?? 0
+        } else if let total = intOrNil(usage["totalTokens"]) {
+            // Malformed total-only usage has no recoverable bucket split; preserve its aggregate total.
+            input = total
+            output = 0
+            cacheWrite = 0
+            cacheRead = 0
+        } else {
+            return nil
+        }
+        return Entry(
+            id: id, date: date, localDay: fmt.string(from: date), model: "pi",
+            input: input, output: output, cacheWrite: cacheWrite, cacheRead: cacheRead)
+    }
+
+    private static func piMessageDate(_ message: [String: Any], envelope: [String: Any]) -> Date? {
+        if let milliseconds = doubleOrNil(message["timestamp"]), milliseconds > 0 {
+            return Date(timeIntervalSince1970: milliseconds / 1_000)
+        }
+        return piEnvelopeDate(envelope)
+    }
+
+    private static func piEnvelopeDate(_ envelope: [String: Any]) -> Date? {
+        guard let timestamp = envelope["timestamp"] as? String else { return nil }
+        return ISO8601Parser.date(from: timestamp)
     }
 
     // MARK: Codex 파싱
@@ -658,7 +820,8 @@ enum LocalUsageReader {
 
     static func codexEntries(modifiedSince: Date, root: URL? = nil) -> [Entry] {
         let fmt = localDayFormatter()
-        let roots = root.map { [$0] } ?? codexScanRoots
+        let roots = root.map { [$0] } ?? codexSessionRoots(
+            customRootsValue: CustomScanRoots.storedValue(for: "codex"))
         let allFiles = codexRolloutFiles(in: roots)
         // 테스트/캐시 미사용 경로 — 아는 세션 id 가 없으니 파일명 힌트와 probe 만으로 부모를 찾는다.
         let (rollouts, includedPaths) = expandCodexParentClosure(
@@ -1041,11 +1204,15 @@ enum LocalUsageReader {
 
     static func geminiEntries(modifiedSince: Date, root: URL? = nil) -> [Entry] {
         let fmt = localDayFormatter()
+        let roots = root.map { [$0] } ?? geminiScanRoots(
+            customRootsValue: CustomScanRoots.storedValue(for: "gemini"))
         var entries: [Entry] = []
-        for file in jsonlFiles(in: root ?? geminiTmpDir, modifiedSince: modifiedSince, allowJSON: true) {
-            entries.append(contentsOf: parseGeminiFile(file, fmt: fmt))
+        for scanRoot in roots {
+            for file in jsonlFiles(in: scanRoot, modifiedSince: modifiedSince, allowJSON: true) {
+                entries.append(contentsOf: parseGeminiFile(file, fmt: fmt))
+            }
         }
-        return entries
+        return dedupKeepMax(entries)
     }
 
     // MARK: Grok 파싱
@@ -1098,10 +1265,14 @@ enum LocalUsageReader {
 
     static func grokEntries(modifiedSince: Date, root: URL? = nil) -> [Entry] {
         let fmt = localDayFormatter()
+        let roots = root.map { [$0] } ?? grokSessionRoots(
+            customRootsValue: CustomScanRoots.storedValue(for: "grok"))
         var entries: [Entry] = []
-        for file in jsonlFiles(in: root ?? grokSessionsDir, modifiedSince: modifiedSince)
-        where isGrokUsageFile(file) {
-            entries.append(contentsOf: parseGrokFile(file, fmt: fmt))
+        for scanRoot in roots {
+            for file in jsonlFiles(in: scanRoot, modifiedSince: modifiedSince)
+            where isGrokUsageFile(file) {
+                entries.append(contentsOf: parseGrokFile(file, fmt: fmt))
+            }
         }
         // fork 세션이 부모 updates 를 복사해도 턴 id 가 같아 한 번만 남는다(전역 dedup).
         return dedupKeepMax(entries)
