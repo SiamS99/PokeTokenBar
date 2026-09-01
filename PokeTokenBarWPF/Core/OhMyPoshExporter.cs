@@ -26,6 +26,7 @@ public class OhMyPoshExporter
     public void Export(
         DailyUsage? claudeToday,
         DailyUsage? codexToday,
+        DailyUsage? ompToday,
         DailyUsage? combinedToday,
         CompanionState state,
         string companionName)
@@ -41,6 +42,7 @@ public class OhMyPoshExporter
                 // Per-provider sections — use these in your OhMyPosh segment.
                 claude = ProviderSection(claudeToday),
                 codex  = ProviderSection(codexToday),
+                omp    = ProviderSection(ompToday),
 
                 // Combined total — use this if you want everything summed.
                 combined = ProviderSection(combinedToday),

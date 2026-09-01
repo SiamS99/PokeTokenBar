@@ -16,12 +16,28 @@ public class CodexProvider
 
     private static string[] BuildScanRoots()
     {
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return
-        [
-            Path.Combine(home, ".codex", "sessions"),
-            Path.Combine(home, ".codex", "archived_sessions"),
-        ];
+        var home  = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var roots = new List<string>();
+
+        // Codex CLI itself honors CODEX_HOME to relocate its data directory —
+        // e.g. when the CLI runs under a different Windows account than this
+        // app, or a custom install. Mirrors ClaudeCodeProvider's CLAUDE_CONFIG_DIR.
+        var codexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        if (!string.IsNullOrWhiteSpace(codexHome))
+        {
+            foreach (var part in codexHome.Split(','))
+            {
+                var p = part.Trim();
+                if (string.IsNullOrEmpty(p)) continue;
+                roots.Add(Path.Combine(p, "sessions"));
+                roots.Add(Path.Combine(p, "archived_sessions"));
+            }
+        }
+
+        roots.Add(Path.Combine(home, ".codex", "sessions"));
+        roots.Add(Path.Combine(home, ".codex", "archived_sessions"));
+
+        return [.. roots.Distinct()];
     }
 
     // ── Public surface ────────────────────────────────────────────────────────

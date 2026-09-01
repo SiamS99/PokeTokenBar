@@ -12,6 +12,7 @@ public partial class UsageStore : ObservableObject, IDisposable
 {
     private readonly ClaudeCodeProvider _claude = new();
     private readonly CodexProvider      _codex  = new();
+    private readonly OmpAgentProvider   _omp    = new();
     private readonly CompanionStore     _companion;
     private readonly OhMyPoshExporter   _ompExporter = new();
     private readonly AppSettings        _settings;
@@ -77,17 +78,20 @@ public partial class UsageStore : ObservableObject, IDisposable
             // Fetch token data from all providers in parallel.
             var claudeTask = Task.Run(_claude.FetchToday);
             var codexTask  = Task.Run(_codex.FetchToday);
+            var ompTask    = Task.Run(_omp.FetchToday);
             var claudePeriodsTask = Task.Run(_claude.FetchPeriods);
             var codexPeriodsTask  = Task.Run(_codex.FetchPeriods);
+            var ompPeriodsTask    = Task.Run(_omp.FetchPeriods);
             var blockTask  = Task.Run(_claude.FetchActiveBlock);
 
-            await Task.WhenAll(claudeTask, codexTask, claudePeriodsTask, codexPeriodsTask, blockTask);
+            await Task.WhenAll(claudeTask, codexTask, ompTask, claudePeriodsTask, codexPeriodsTask, ompPeriodsTask, blockTask);
 
-            var today = Merge(claudeTask.Result, codexTask.Result);
+            var today = Merge(Merge(claudeTask.Result, codexTask.Result), ompTask.Result);
             var (claudeWeek, claudeMonth) = claudePeriodsTask.Result;
             var (codexWeek,  codexMonth)  = codexPeriodsTask.Result;
-            var week  = Merge(claudeWeek,  codexWeek);
-            var month = Merge(claudeMonth, codexMonth);
+            var (ompWeek,    ompMonth)    = ompPeriodsTask.Result;
+            var week  = Merge(Merge(claudeWeek,  codexWeek),  ompWeek);
+            var month = Merge(Merge(claudeMonth, codexMonth), ompMonth);
 
             await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
             {
@@ -116,7 +120,17 @@ public partial class UsageStore : ObservableObject, IDisposable
 
             // OhMyPosh export — pass each provider separately so the segment can pick which count to show.
             if (_settings.OhMyPoshExportEnabled)
-                _ompExporter.Export(claudeTask.Result, codexTask.Result, today, _companion.State, _companion.CompanionDisplayName);
+                _ompExporter.Export(claudeTask.Result, codexTask.Result, ompTask.Result, today, _companion.State, _companion.CompanionDisplayName);
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                File.AppendAllText(
+                    Path.Combine(AppSettings.AppDataDir, "diag.log"),
+                    $"[{DateTime.Now:O}] RefreshAsync threw:\n{ex}\n\n");
+            }
+            catch { }
         }
         finally
         {
@@ -151,9 +165,10 @@ public partial class UsageStore : ObservableObject, IDisposable
         var rangeEnd = today.AddDays(-1);
         var claudeTask = Task.Run(() => _claude.FetchRange(lastDate, rangeEnd));
         var codexTask  = Task.Run(() => _codex.FetchRange(lastDate, rangeEnd));
-        await Task.WhenAll(claudeTask, codexTask);
+        var ompTask    = Task.Run(() => _omp.FetchRange(lastDate, rangeEnd));
+        await Task.WhenAll(claudeTask, codexTask, ompTask);
 
-        var actualTotal = (claudeTask.Result?.TotalTokens ?? 0) + (codexTask.Result?.TotalTokens ?? 0);
+        var actualTotal = (claudeTask.Result?.TotalTokens ?? 0) + (codexTask.Result?.TotalTokens ?? 0) + (ompTask.Result?.TotalTokens ?? 0);
         var alreadyClaimed = _companion.State.ClaimedTodayTokensByProvider.GetValueOrDefault("combined");
         return Math.Max(0, actualTotal - alreadyClaimed);
     }
