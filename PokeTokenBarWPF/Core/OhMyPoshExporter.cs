@@ -27,6 +27,7 @@ public class OhMyPoshExporter
         DailyUsage? claudeToday,
         DailyUsage? codexToday,
         DailyUsage? ompToday,
+        DailyUsage? opencodeToday,
         DailyUsage? combinedToday,
         CompanionState state,
         string companionName)
@@ -40,9 +41,10 @@ public class OhMyPoshExporter
             var payload = new
             {
                 // Per-provider sections — use these in your OhMyPosh segment.
-                claude = ProviderSection(claudeToday),
-                codex  = ProviderSection(codexToday),
-                omp    = ProviderSection(ompToday),
+                claude   = ProviderSection(claudeToday),
+                codex    = ProviderSection(codexToday),
+                omp      = ProviderSection(ompToday),
+                opencode = ProviderSection(opencodeToday),
 
                 // Combined total — use this if you want everything summed.
                 combined = ProviderSection(combinedToday),

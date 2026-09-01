@@ -10,9 +10,10 @@ namespace PokeTokenBar.Core;
 /// </summary>
 public partial class UsageStore : ObservableObject, IDisposable
 {
-    private readonly ClaudeCodeProvider _claude = new();
-    private readonly CodexProvider      _codex  = new();
-    private readonly OmpAgentProvider   _omp    = new();
+    private readonly ClaudeCodeProvider _claude    = new();
+    private readonly CodexProvider      _codex     = new();
+    private readonly OmpAgentProvider   _omp       = new();
+    private readonly OpenCodeProvider   _opencode  = new();
     private readonly CompanionStore     _companion;
     private readonly OhMyPoshExporter   _ompExporter = new();
     private readonly AppSettings        _settings;
@@ -76,22 +77,28 @@ public partial class UsageStore : ObservableObject, IDisposable
             IsFetching = true;
 
             // Fetch token data from all providers in parallel.
-            var claudeTask = Task.Run(_claude.FetchToday);
-            var codexTask  = Task.Run(_codex.FetchToday);
-            var ompTask    = Task.Run(_omp.FetchToday);
-            var claudePeriodsTask = Task.Run(_claude.FetchPeriods);
-            var codexPeriodsTask  = Task.Run(_codex.FetchPeriods);
-            var ompPeriodsTask    = Task.Run(_omp.FetchPeriods);
+            var claudeTask    = Task.Run(_claude.FetchToday);
+            var codexTask     = Task.Run(_codex.FetchToday);
+            var ompTask       = Task.Run(_omp.FetchToday);
+            var opencodeTask  = Task.Run(_opencode.FetchToday);
+            var claudePeriodsTask   = Task.Run(_claude.FetchPeriods);
+            var codexPeriodsTask    = Task.Run(_codex.FetchPeriods);
+            var ompPeriodsTask      = Task.Run(_omp.FetchPeriods);
+            var opencodePeriodsTask = Task.Run(_opencode.FetchPeriods);
             var blockTask  = Task.Run(_claude.FetchActiveBlock);
 
-            await Task.WhenAll(claudeTask, codexTask, ompTask, claudePeriodsTask, codexPeriodsTask, ompPeriodsTask, blockTask);
+            await Task.WhenAll(
+                claudeTask, codexTask, ompTask, opencodeTask,
+                claudePeriodsTask, codexPeriodsTask, ompPeriodsTask, opencodePeriodsTask,
+                blockTask);
 
-            var today = Merge(Merge(claudeTask.Result, codexTask.Result), ompTask.Result);
-            var (claudeWeek, claudeMonth) = claudePeriodsTask.Result;
-            var (codexWeek,  codexMonth)  = codexPeriodsTask.Result;
-            var (ompWeek,    ompMonth)    = ompPeriodsTask.Result;
-            var week  = Merge(Merge(claudeWeek,  codexWeek),  ompWeek);
-            var month = Merge(Merge(claudeMonth, codexMonth), ompMonth);
+            var today = Merge(Merge(Merge(claudeTask.Result, codexTask.Result), ompTask.Result), opencodeTask.Result);
+            var (claudeWeek, claudeMonth)     = claudePeriodsTask.Result;
+            var (codexWeek,  codexMonth)      = codexPeriodsTask.Result;
+            var (ompWeek,    ompMonth)        = ompPeriodsTask.Result;
+            var (opencodeWeek, opencodeMonth) = opencodePeriodsTask.Result;
+            var week  = Merge(Merge(Merge(claudeWeek,  codexWeek),  ompWeek),  opencodeWeek);
+            var month = Merge(Merge(Merge(claudeMonth, codexMonth), ompMonth), opencodeMonth);
 
             await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
             {
@@ -120,7 +127,7 @@ public partial class UsageStore : ObservableObject, IDisposable
 
             // OhMyPosh export — pass each provider separately so the segment can pick which count to show.
             if (_settings.OhMyPoshExportEnabled)
-                _ompExporter.Export(claudeTask.Result, codexTask.Result, ompTask.Result, today, _companion.State, _companion.CompanionDisplayName);
+                _ompExporter.Export(claudeTask.Result, codexTask.Result, ompTask.Result, opencodeTask.Result, today, _companion.State, _companion.CompanionDisplayName);
         }
         catch (Exception ex)
         {
@@ -163,12 +170,14 @@ public partial class UsageStore : ObservableObject, IDisposable
         // claimed for lastDate before the app closed is subtracted below so
         // it isn't double-credited.
         var rangeEnd = today.AddDays(-1);
-        var claudeTask = Task.Run(() => _claude.FetchRange(lastDate, rangeEnd));
-        var codexTask  = Task.Run(() => _codex.FetchRange(lastDate, rangeEnd));
-        var ompTask    = Task.Run(() => _omp.FetchRange(lastDate, rangeEnd));
-        await Task.WhenAll(claudeTask, codexTask, ompTask);
+        var claudeTask   = Task.Run(() => _claude.FetchRange(lastDate, rangeEnd));
+        var codexTask    = Task.Run(() => _codex.FetchRange(lastDate, rangeEnd));
+        var ompTask      = Task.Run(() => _omp.FetchRange(lastDate, rangeEnd));
+        var opencodeTask = Task.Run(() => _opencode.FetchRange(lastDate, rangeEnd));
+        await Task.WhenAll(claudeTask, codexTask, ompTask, opencodeTask);
 
-        var actualTotal = (claudeTask.Result?.TotalTokens ?? 0) + (codexTask.Result?.TotalTokens ?? 0) + (ompTask.Result?.TotalTokens ?? 0);
+        var actualTotal = (claudeTask.Result?.TotalTokens ?? 0) + (codexTask.Result?.TotalTokens ?? 0)
+            + (ompTask.Result?.TotalTokens ?? 0) + (opencodeTask.Result?.TotalTokens ?? 0);
         var alreadyClaimed = _companion.State.ClaimedTodayTokensByProvider.GetValueOrDefault("combined");
         return Math.Max(0, actualTotal - alreadyClaimed);
     }
