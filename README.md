@@ -9,6 +9,7 @@
 [![Release](https://img.shields.io/github/v/release/chattymin/PokeTokenBar?color=444d56&label=release)](https://github.com/chattymin/PokeTokenBar/releases)
 [![macOS](https://img.shields.io/badge/macOS-14%2B-0969da)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-6-f05138)](https://swift.org)
+[![Windows](https://img.shields.io/badge/Windows-.NET%208-0078D6)](#windows-wpf)
 [![Homebrew](https://img.shields.io/badge/Homebrew-cask-8957e5)](#homebrew)
 [![License](https://img.shields.io/badge/license-MIT-3fb950)](LICENSE)
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%99%A5-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/chattymin)
@@ -23,6 +24,8 @@
 PokeTokenBar turns the AI coding tokens you're already burning — Claude Code, Codex, Gemini CLI, Antigravity, OpenCode, Hermes Agent, Cursor, Grok CLI, Copilot CLI, Kiro CLI, Pi Agent & omp — into a growing **Pokémon companion** in your macOS menu bar. Spend tokens, hatch an egg, evolve it through its real evolution line, graduate it into your Pokédex, and start again. Underneath the companion it's a precise usage tracker — today's spend, cost, and official 5-hour / weekly limits, read straight from your local logs.
 
 > Token usage is read directly from local Claude Code, Codex, Gemini CLI, Antigravity, OpenCode, Hermes Agent, Cursor, Grok CLI, Copilot CLI, Kiro CLI, Pi Agent, and omp data (`totalTokens` = input + output + cache, local date) — no external CLI needed. Unofficial, non-commercial Pokémon fan project — see [License & disclaimer](#license--disclaimer).
+
+> **On Windows?** A community WPF build with the same core loop (fewer tracked sources) lives in [`PokeTokenBarWPF/`](PokeTokenBarWPF/) — see [Windows (WPF)](#windows-wpf).
 
 ## Why
 
@@ -186,6 +189,53 @@ Because the app is ad-hoc/self-signed (not notarized under an Apple Developer ac
 swift build                  # debug
 swift test                   # unit tests
 ./scripts/build-app.sh       # release → PokeTokenBar.app → /Applications
+```
+
+## Windows (WPF)
+
+A community-maintained Windows build lives in [`PokeTokenBarWPF/`](PokeTokenBarWPF/) — a .NET 8 WPF app with the same core loop (egg → hatch → evolve → graduate → Pokédex, Shop, Bag) living in your system tray instead of the menu bar. It currently tracks fewer sources than the macOS build, and has no official 5h/weekly limits or burn-rate forecast yet:
+
+| Tool | Tracked |
+|---|---|
+| **Claude Code** | today · week · month |
+| **Codex** | today · week · month |
+| **OpenCode** | today · week · month |
+| **omp** (oh-my-pi) | today · week · month |
+
+### Build from source
+
+Requirements: Windows 10+, [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
+
+```powershell
+cd PokeTokenBarWPF
+dotnet build                              # debug
+dotnet publish -c Release -o publish      # release build -> publish\PokeTokenBar.exe
+```
+
+Run `publish\PokeTokenBar.exe` — it adds a tray icon, and Settings can register it to launch at sign-in.
+
+**Environment overrides**, same idea as the macOS build's per-tool variables:
+
+| Variable | Purpose |
+|---|---|
+| `CLAUDE_CONFIG_DIR` | Claude Code config directory (comma-separated for multiple) |
+| `CODEX_HOME` | Codex CLI home directory, when it differs from `%USERPROFILE%\.codex` |
+| `OPENCODE_DATA_DIR` | OpenCode data directory, when it differs from `%USERPROFILE%\.local\share\opencode` |
+| `POKETOKENBAR_OMP_HOME` | omp's home directory — PokeTokenBar-specific (omp itself has no such variable), for setups where omp runs under a different Windows account than this app |
+
+It also writes `%APPDATA%\PokeTokenBar\omp.json` on every refresh — a small JSON snapshot (per-provider and combined token/cost totals, companion state) meant for an [oh-my-posh](https://ohmyposh.dev/) prompt segment. Example segment showing the combined token total:
+
+```json
+{
+  "type": "command",
+  "style": "plain",
+  "foreground": "#FFD700",
+  "template": "{{ .Output }}",
+  "properties": {
+    "shell": "pwsh",
+    "command": "& { $d=(Get-Content -Raw \"$env:APPDATA\\PokeTokenBar\\omp.json\"|ConvertFrom-Json); $d.combined.tokens_today_fmt }"
+  }
+}
 ```
 
 ## Data sources
