@@ -27,12 +27,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     // 메뉴바 캐릭터 애니메이션 — 단일 타이머로 프레임 순환.
     // 프레임 = 이미 22px 로 합성된 이미지 + delay. egg/static 은 2프레임 bob, animated 는 GIF 실제 프레임.
-    private var menuSpriteKey: String?   // "id-shiny" — 같은 종이라도 shiny 여부가 바뀌면 재로딩
+    private var menuSpriteKey: String?   // menuSpriteKey(id:shiny:floor:) 결과 — 바뀌면 재로딩
     private var menuFrames: [(image: NSImage, delay: TimeInterval)] = []
+    /// `menuFrames` 와 인덱스 대응하는 레이어용 비트맵. 프레임 준비 시 한 번만 변환한다.
+    /// 비어 있으면(변환 실패) `setStatusImage` 가 `button.image` 폴백 경로를 탄다.
+    private var menuLayerFrames: [CGImage] = []
     private var menuIndex = 0
     private var menuTimer: Timer?
     private var menuLoadGen = 0     // async 로드 경합 방지
     private var displayAwake = true     // 디스플레이 켜짐 여부 (꺼지면 메뉴 애니메이션 정지 — 배터리)
+    private var powerObserver: NSObjectProtocol?   // 저전력 토글 → 유효 fps 하한 재평가
+
+    /// 스프라이트 전용 서브레이어 — 프레임 교체의 드로잉 비용을 없앤다.
+    ///
+    /// `button.image` 대입은 레이어 백드 `NSStatusBarButton` 전체를 재드로잉시킨다. 거기엔 스프라이트
+    /// 22px 뿐 아니라 **매 프레임 다시 그려지는 2줄 attributedTitle 텍스트**가 포함돼, 5fps 루프에서
+    /// 그 비용이 상시로 깔린다. 대신 이 레이어의 `contents` 만 갈아끼우면 이미 업로드된 비트맵을
+    /// 바꿔 끼우는 것뿐이라 드로잉 경로(`_NSViewDrawRect`)를 아예 타지 않는다.
+    ///
+    /// 실측(A/B 프로브 — 같은 타이머·5fps·2줄 타이틀·60초×2라운드 평균):
+    /// `button.image`+CATransaction 2.00ms/프레임 → `layer.contents` 0.27ms/프레임(−86%).
+    /// 라이브 앱 `sample` 전후로도 타이머 경로 1.37% → 0.20%, `_NSViewDrawRect` 105 → 0 샘플.
+    /// (`button.image` 를 CATransaction 밖에서 대입하면 3.51ms 로 되레 악화 — 기존 전환 억제 규칙은
+    /// 그대로 유효하다. 근거는 defect-log '에너지' 절.)
+    private let spriteLayer = CALayer()
+    /// 폭 확보용 투명 `button.image` 의 현재 크기 — 바뀔 때만 재대입해 레이아웃 유발을 줄인다.
+    private var placeholderSize: NSSize?
+    /// 버튼 폭(=텍스트 길이)이나 스프라이트 크기가 변하면 레이어를 이미지 자리에 다시 맞춰야 한다.
+    private var needsSpriteLayout = true
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 로그인 에이전트 등록(plist 의 RunAtLoad)이 이미 떠 있는 앱을 한 번 더 실행한다 — 나중에 뜬
@@ -70,12 +92,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            setStatusImage(Self.eggImage(up: false))   // 초기 알도 전환 억제 경로로 통일(불변식)
             button.imagePosition = .imageLeading
             button.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
             button.cell?.usesSingleLineMode = false   // 사용량/한도를 2줄로 세로 스택 가능하게
             button.action = #selector(togglePopover)
             button.target = self
+            prepareSpriteLayer(on: button)   // 프레임 교체를 레이어 contents 로 — 설정이 먼저다
+            let egg = Self.eggImage(up: false)
+            setStatusImage(egg, cgFrame: Self.cgFrame(from: egg))   // 초기 알도 같은 경로로(불변식)
         }
 
         popover.behavior = .transient
@@ -84,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         observeStore()
         observeCompanionSprite()
         observeDisplaySleep()
+        observePowerState()
         applyState()
     }
 
@@ -101,13 +126,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
-    /// 대표 스프라이트 정체성(종/shiny) 관찰 — 대표 선택·해제뿐 아니라 사탕 진화·졸업(BagView),
-    /// 세이브 가져오기, 부화·메타몽 리빌 async 완료처럼 store 갱신 틱 없이 companion 만 바뀌는
-    /// 경로에서도 메뉴바를 즉시 갱신한다. observeStore(menuTitle)만으론 다음 사용량 폴링(기본 120s)까지
+    /// 대표 스프라이트 정체성(종/shiny/fps 하한) 관찰 — 대표 선택·해제와 애니메이션 품질 변경뿐 아니라
+    /// 사탕 진화·졸업(BagView), 세이브 가져오기, 부화·메타몽 리빌 async 완료처럼 store 갱신 틱 없이
+    /// companion 만 바뀌는 경로에서도 메뉴바를 즉시 갱신한다. observeStore(menuTitle)만으론 다음 사용량 폴링(기본 120s)까지
     /// 이전 포켓몬이 남는다(사탕 졸업 후 메뉴바 잔상 리포트 — UsageStore.onRefresh 주석과 같은 부류).
+    ///
+    /// **fps 설정도 여기서 관찰한다**: 프레임은 하한에 맞춰 솎아낸 결과물이라 하한이 곧 정체성의
+    /// 일부다(`menuSpriteKey`). `observeStore` 는 `menuTitle` 만 추적하므로, 이걸 빼면 설정을
+    /// 바꿔도 다음 사용량 폴링(기본 120s)까지 옛 fps 로 돈다 — 위 '메뉴바 잔상'과 같은 부류.
+    /// (플로팅 펫은 `body` 에서 직접 읽어 SwiftUI 관찰이 처리한다.)
     private func observeCompanionSprite() {
         withObservationTracking {
             _ = companion.representativeSubject
+            _ = store.animationQuality
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
@@ -118,9 +149,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    /// 저전력 모드 토글을 즉시 반영 — 유효 하한(`menuFrameFloor`)이 바뀌면 `menuSpriteKey` 가
+    /// 달라져 `ensureMenuAnimation()` 이 재구성한다(선택이 powerSaver 면 하한 불변 → 재구성 없음,
+    /// 이미 그 프레임률이라 옳다). 플로팅 펫은 자체 관측(`FloatingPetController`)으로 따로 처리.
+    private func observePowerState() {
+        powerObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name.NSProcessInfoPowerStateDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.ensureMenuAnimation()
+                self.syncMenuAnimation()
+            }
+        }
+    }
+
     private func applyState() {
         guard let button = statusItem.button else { return }
         Self.applyMenuText(store.menuLines, to: button)
+        needsSpriteLayout = true   // 텍스트 길이가 바뀌면 버튼 폭이 변해 이미지 자리도 움직인다
         // stale 시각 dim 제거 — 슬립/런치 직후 refresh 완료 전 몇 초간 회색으로 보여 '고장/비활성'
         // 으로 오인되던 것 방지(사용자 반복 지적). 데이터가 오래됐다는 신호가 필요하면 팝오버
         // (limitsUpdatedAt 등)에서 제공하고, 메뉴바 아이콘·숫자는 흐리게 하지 않는다.
@@ -129,6 +176,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         updateCompanion()
         ensureMenuAnimation()
         syncMenuAnimation()   // 가시성 상태 주기적 재평가(occlusion 이 잘못 멈춰도 자가 복구)
+        // 같은 프레임이면 setStatusImage 가 diff-gate 로 조기 반환해 재배치를 못 했을 수 있다.
+        if needsSpriteLayout { layoutSpriteLayer() }
     }
 
     /// 메뉴바 버튼 텍스트 반영 — 1줄이면 기본 title(13pt), 2줄 이상이면 세로 스택.
@@ -193,15 +242,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     // MARK: 메뉴바 애니메이션
 
+    /// 메뉴바 GIF 프레임 지속의 하한(초) = fps 상한. 사용자 설정
+    /// (`UsageStore.AnimationQuality`)이 값을 정하고, `GIFDecoder.capFrameRate` 가 프레임을
+    /// 솎아내 적용한다. 하한 자체는 없어질 수 없다 — 근거는 그 enum 과 defect-log '에너지' 절.
+    /// 히스토리: 0.4s 고정 → 프리셋(0.4/0.2/0.1) 중 사용자 선택. 기기·스프라이트마다 체감과
+    /// 배터리 영향이 갈려 하나의 값으로 수렴하지 못했다 — 기본값은 고정 캡과 같은 0.4s 다.
+    /// 저전력 모드에선 powerSaver 하한으로 캡된다(`effectiveFrameFloor` — 저장 설정 무변경 파생,
+    /// 해제 시 자동 복귀). 이 값이 `menuSpriteKey` 에 들어가므로 저전력 토글 → 키 변화 → 재구성.
+    private var menuFrameFloor: TimeInterval {
+        store.animationQuality.effectiveFrameFloor(
+            lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled)
+    }
+
+    /// `Timer.tolerance` 배수 — wakeup 코얼레싱(다른 wakeup 과 합쳐 배터리 절약)의 강도.
+    ///
+    /// **늦게만 발화시킨다**(Apple: "fire the timer later than the scheduled time, up to the
+    /// tolerance"). 따라서 이 배수는 곧 애니메이션이 느려질 수 있는 상한이다 — 0.5 였을 때
+    /// 2.75s 루프가 최대 4.13s(1.5배)까지 늘어, 정확한 타이밍으로 도는 팝오버(`tolerance: .zero`)와
+    /// 나란히 보면 메뉴바만 느려 보였다(2026-08-20). 코얼레싱은 남기고 늘어짐만 눌러 0.1 로 낮춤.
+    static let menuFrameTolerance = 0.1
+
     /// 대표 포켓몬에 맞춰 메뉴바 프레임을 준비. 종이 바뀐 경우에만 재로딩.
     /// 정적 스프라이트로 먼저 보여주고, animated GIF 가 받아지면 교체한다(메뉴바도 GIF로 움직임).
-    /// 에너지 통제는 ① delay 하한 0.2s(≈5fps) ② 안 보이면 정지(menuShouldAnimate) ③ 저전력 모드
-    /// 에선 GIF 생략(가벼운 bob)로 처리한다 — 통제된 저프레임 + 비가시 시 정지로 저전력.
+    /// 에너지 통제는 ① delay 하한 `menuFrameFloor` ② 안 보이면 정지(menuShouldAnimate) ③ 저전력 모드
+    /// 에선 하한을 powerSaver 로 강제 캡(`effectiveFrameFloor`)한다 — GIF 를 생략(bob)하는 대신
+    /// 프레임률만 낮춰, 애니메이션을 유지한 채 절전한다(bob 2회/s ↔ powerSaver ≤2.5회/s 로 근접).
     private func ensureMenuAnimation() {
         let subject = companion.representativeSubject
         let id = subject.speciesID
         let shiny = subject.isShiny
-        let key = id.map { "\($0)-\(shiny)" }
+        let key = id.map { Self.menuSpriteKey(id: $0, shiny: shiny, floor: menuFrameFloor) }
         if key == menuSpriteKey, !menuFrames.isEmpty { return }   // 이미 이 개체로 애니메이션 중
         menuSpriteKey = key
         menuLoadGen += 1
@@ -224,8 +294,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
         }
 
-        // 풀 GIF 애니메이션(저전력 모드에서는 생략하고 bob 유지). delay 하한 0.1s(≤10fps)로 redraw 통제.
-        guard !ProcessInfo.processInfo.isLowPowerModeEnabled else { return }
+        // 풀 GIF 애니메이션. delay 하한 `menuFrameFloor` 로 redraw 통제 — 저전력 모드에선 이 하한이
+        // powerSaver 로 캡되므로(GIF 생략 대신) 실제 애니메이션을 유지한 채 절전한다.
         Task { @MainActor [weak self] in
             guard let self, gen == self.menuLoadGen else { return }
             // shiny GIF 미제공 종이면 일반 GIF 폴백
@@ -236,32 +306,112 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             guard let data else { return }
             let raw = GIFDecoder.frames(from: data)
             guard raw.count > 1, gen == self.menuLoadGen else { return }
-            // 메뉴바 GIF delay 하한 0.4s(≈2.5fps)로 캡 — 22px 스프라이트엔 5fps와 구분 안 되고, 프레임당
-            // 상태바 재합성(CA 커밋 → 디스플레이 사이클 wakeup)을 절반으로 줄여 배터리 절약. bob(0.5s/2fps)과 유사.
-            self.setMenuFrames(raw.map { (Self.menuBarImage(from: $0.image, up: false), max(0.4, $0.delay)) })
+            // fps 캡 = `menuFrameFloor`. 프레임마다 상태바 재합성(CA 커밋 → 디스플레이 사이클
+            // wakeup)이 붙으므로 네이티브 fps 로는 절대 돌리지 않는다(근거는 상수 주석).
+            // 솎아낸 **뒤** 22px 로 합성한다 — 버려질 프레임까지 합성하지 않게.
+            let capped = GIFDecoder.capFrameRate(raw, floor: self.menuFrameFloor)
+            self.setMenuFrames(capped.map { (Self.menuBarImage(from: $0.image, up: false), $0.delay) })
         }
     }
 
     private func setMenuFrames(_ frames: [(image: NSImage, delay: TimeInterval)]) {
         menuFrames = frames
+        // 레이어용 비트맵은 프레임을 준비할 때 한 번만 만든다 — 프레임마다 변환하면 절감분이 사라진다.
+        let converted = frames.compactMap { Self.cgFrame(from: $0.image) }
+        menuLayerFrames = converted.count == frames.count ? converted : []   // 하나라도 실패하면 폴백
         menuIndex = 0
         advanceMenu()
     }
 
     private var lastStatusImage: NSImage?
 
-    /// 상태아이템 이미지 교체. ① **diff-gate**: 같은 이미지 재대입이면 스킵 — 레이어 dirty → CA 커밋 →
+    /// 스프라이트 레이어를 버튼에 얹는다. 스프라이트는 픽셀아트라 보간 없이(nearest) 그린다 —
+    /// `menuBarImage` 가 `imageInterpolation = .none` 으로 합성하는 것과 같은 이유.
+    private func prepareSpriteLayer(on button: NSStatusBarButton) {
+        button.wantsLayer = true
+        spriteLayer.magnificationFilter = .nearest
+        spriteLayer.minificationFilter = .nearest
+        spriteLayer.contentsGravity = .resizeAspect   // 자리 rect 와 종횡비가 어긋나도 찌그러지지 않게
+        button.layer?.addSublayer(spriteLayer)
+    }
+
+    /// 프레임 NSImage → 레이어 `contents` 용 비트맵. 실패하면 nil = `button.image` 폴백.
+    nonisolated static func cgFrame(from image: NSImage) -> CGImage? {
+        var rect = CGRect(origin: .zero, size: image.size)
+        return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+    }
+
+    /// 레이어 `contentsScale` — **화면 스케일이 아니라 비트맵이 합성된 스케일**을 따른다.
+    /// 프레임은 `menuBarImage` 가 `lockFocus` 로 합성해 그때의 백킹 스케일로 픽셀이 굳는다. 표시
+    /// 스케일을 현재 화면에서 가져오면 2x 로 합성된 프레임을 1x 외부 모니터에 올렸을 때 스프라이트가
+    /// 두 배로 보인다 — 비트맵 자신의 픽셀/포인트 비율을 쓰면 어느 화면에서도 캔버스 포인트 크기와
+    /// 같게 유지된다. 순수·테스트용: `testSpriteContentsScaleFollowsTheBitmapNotTheScreen`.
+    nonisolated static func spriteContentsScale(pixelWidth: Int, pointWidth: CGFloat) -> CGFloat {
+        max(1, CGFloat(pixelWidth) / max(pointWidth, 1))
+    }
+
+    /// 폭만 확보하는 투명 자리표시자 — 실제 픽셀은 `spriteLayer` 가 그린다.
+    /// 이미지를 아예 비우지 않는 이유: `imagePosition`·텍스트 배치·상태아이템 폭 계산을 그대로
+    /// AppKit 에 맡기기 위해서다(직접 length 를 잡으면 2줄 타이틀 배치가 어긋난다).
+    private static func transparentImage(size: NSSize) -> NSImage {
+        let img = NSImage(size: size)
+        img.lockFocus()
+        NSColor.clear.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        img.unlockFocus()
+        return img
+    }
+
+    /// 스프라이트 레이어를 "버튼이 이미지를 그리려던 자리"에 맞춘다. 버튼 폭은 텍스트 길이에 따라
+    /// 변하므로 텍스트를 갱신한 뒤에도 다시 불러야 한다(`applyState`).
+    private func layoutSpriteLayer() {
+        guard let button = statusItem.button, let host = button.layer else { return }
+        let bounds = button.bounds
+        guard bounds.width > 1, bounds.height > 1 else { return }   // 레이아웃 전 — 다음 갱신에 재시도
+        let rect = (button.cell as? NSButtonCell)?.imageRect(forBounds: bounds) ?? bounds
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if spriteLayer.superlayer !== host { host.addSublayer(spriteLayer) }
+        spriteLayer.frame = rect
+        CATransaction.commit()
+        needsSpriteLayout = false
+    }
+
+    /// 상태아이템 프레임 교체. ① **diff-gate**: 같은 이미지 재대입이면 스킵 — 레이어 dirty → CA 커밋 →
     /// WindowServer 디스플레이 사이클 왕복(= idle wakeup)을 제거한다(배터리). 단일프레임 스프라이트·중복
     /// advanceMenu 패스에서 같은 프레임을 반복 대입하던 것을 걸러낸다(애니메이션 프레임은 서로 다른 객체라
     /// 정상 통과). ② **암묵적 CA 전환 억제**: 레이어 백드 NSStatusBarButton 은 대입마다 NSStatusItemScene
     /// 전환 애니메이션을 돌려 상태바를 재합성한다(측정: idle CPU 주범) → setDisableActions 로 전환 없이 즉시 반영.
-    private func setStatusImage(_ image: NSImage?) {
+    /// ③ **드로잉 경로 회피**: 프레임 픽셀은 `button.image` 가 아니라 `spriteLayer.contents` 로 넣는다.
+    /// `button.image` 대입은 버튼 전체(2줄 타이틀 텍스트 포함)를 다시 그리게 하지만 contents 교체는
+    /// 비트맵을 바꿔 끼울 뿐이다 — 실측 2.00ms → 0.27ms/프레임(`spriteLayer` 주석). ②는 그대로 유지된다:
+    /// 자리표시자 대입과 레이어 변경 모두 전환 억제 트랜잭션 안에서 일어난다.
+    private func setStatusImage(_ image: NSImage?, cgFrame: CGImage?) {
         guard image !== lastStatusImage else { return }
         lastStatusImage = image
+        guard let button = statusItem.button else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        statusItem.button?.image = image
-        CATransaction.commit()
+        defer { CATransaction.commit() }
+
+        guard let image, let cgFrame else {
+            // 이미지 없음/변환 실패 — 기존 button.image 경로로 폴백하고 레이어는 비운다.
+            spriteLayer.isHidden = true
+            spriteLayer.contents = nil
+            placeholderSize = nil
+            button.image = image
+            return
+        }
+        if placeholderSize != image.size {   // 폭이 바뀔 때만 자리표시자 재대입 → 레이아웃 유발 최소화
+            placeholderSize = image.size
+            button.image = Self.transparentImage(size: image.size)
+            needsSpriteLayout = true
+        }
+        spriteLayer.isHidden = false
+        spriteLayer.contentsScale = Self.spriteContentsScale(
+            pixelWidth: cgFrame.width, pointWidth: image.size.width)
+        spriteLayer.contents = cgFrame
+        if needsSpriteLayout { layoutSpriteLayer() }
     }
 
     /// 현재 프레임을 메뉴바에 올리고, 그 프레임의 delay 후 다음 프레임 예약(자기 재예약).
@@ -269,8 +419,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         menuTimer?.invalidate()
         menuTimer = nil
         guard !menuFrames.isEmpty else { return }
-        let frame = menuFrames[menuIndex % menuFrames.count]
-        setStatusImage(frame.image)   // 현재 프레임은 항상 반영(정지 중에도 올바른 스프라이트). 전환 억제 대입.
+        let index = menuIndex % menuFrames.count
+        let frame = menuFrames[index]
+        // 현재 프레임은 항상 반영(정지 중에도 올바른 스프라이트). 전환 억제 + 레이어 contents 교체.
+        setStatusImage(frame.image, cgFrame: menuLayerFrames.indices.contains(index) ? menuLayerFrames[index] : nil)
         // 화면 꺼짐/메뉴바 가림(occlusion) 또는 단일 프레임이면 다음 프레임 예약 안 함 → 정지(낭비 제거).
         guard menuShouldAnimate, menuFrames.count > 1 else { return }
         let timer = Timer(timeInterval: frame.delay, repeats: false) { [weak self] _ in
@@ -281,7 +433,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.advanceMenu()
             }
         }
-        timer.tolerance = frame.delay * 0.5   // 웨이크업 코얼레싱 (배터리) — 넓힐수록 다른 wakeup 과 합쳐짐
+        // 웨이크업 코얼레싱 (배터리). 넓힐수록 다른 wakeup 과 합쳐지지만 그만큼 애니메이션이
+        // 늘어질 수 있다 — 배수 근거는 `menuFrameTolerance` 주석.
+        timer.tolerance = frame.delay * Self.menuFrameTolerance
         RunLoop.main.add(timer, forMode: .common)
         menuTimer = timer
     }
@@ -293,6 +447,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // displayAwake 슬립 게이팅이 실질 방어 — occlusion 체크는 유지하되 보조적.)
         displayAwake && !popover.isShown
             && (statusItem.button?.window?.occlusionState.contains(.visible) ?? true)
+    }
+
+    /// 메뉴바 프레임 캐시의 정체성 — 이 값이 바뀌면 프레임을 다시 만든다.
+    ///
+    /// **하한(fps 설정)이 반드시 들어가야 한다.** 프레임은 하한에 맞춰 솎아낸 결과물이라, 키가
+    /// 종·이로치만 담으면 설정을 바꿔도 다음 진화까지 옛 fps 로 계속 돈다(설계 시 확인된 함정).
+    /// 순수·테스트용: `testIdentityKeysIncludeTheFrameFloor`.
+    static func menuSpriteKey(id: Int, shiny: Bool, floor: TimeInterval) -> String {
+        "\(id)-\(shiny)-\(floor)"
     }
 
     // MARK: 프레임 합성 (22px)
